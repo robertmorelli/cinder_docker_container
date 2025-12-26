@@ -46,7 +46,6 @@ RUN cd /cinder/src && (make -C /cinder/src distclean 2>/dev/null || true)
 
 # Configure and build Cinder Python
 RUN \
-    sed -i '325a\            libraries=["z"],' /cinder/src/cinderx/setup.py && \
     /cinder/src/configure --prefix=/cinder --enable-cinderx-module && \
     make -j${MAKE_JOBS:-$(nproc)} VERBOSE=$MAKE_VERBOSE
 
@@ -57,7 +56,7 @@ FROM --platform=linux/amd64 build AS install
 WORKDIR /cinder/build
 
 # Install Python to /cinder
-RUN make install
+RUN sed -i '325a\            libraries=["z"],' /cinder/src/cinderx/setup.py && make install
 
 # Stage 3: Runtime
 FROM --platform=linux/amd64 ubuntu:24.04 AS runtime
