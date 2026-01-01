@@ -1,57 +1,10 @@
-# build for x86
-FROM --platform=linux/amd64 ubuntu:24.04 AS build
+FROM --platform=linux/amd64 ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    g++ \
-    git \
-    ccache \
-    gdb \
-    lcov \
-    libbz2-dev \
-    libffi-dev \
-    libgdbm-dev \
-    libgdbm-compat-dev \
-    liblzma-dev \
-    libncurses5-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    libssl-dev \
-    lzma \
-    tk-dev \
-    uuid-dev \
-    zlib1g-dev \
-    xz-utils
-
-# Build arguments for make parallelism
-ARG make_jobs
-ARG make_verbose=1
-ENV MAKE_JOBS="${make_jobs}" MAKE_VERBOSE="${make_verbose}"
-
-WORKDIR /cinder/build
-
-COPY --chmod=0755 cinder/ /cinder/src/
-
-RUN cd /cinder/src && (make -C /cinder/src distclean 2>/dev/null || true)
-
-# its enable-cinderx-module instead of enable-optimizations now idk why
-run \
-    /cinder/src/configure --prefix=/cinder --enable-cinderx-module && \
-    make clean && \
-    make -j8 VERBOSE=$MAKE_VERBOSE
-
-
-# build for x86
-FROM --platform=linux/amd64 build AS install
-
-WORKDIR /cinder/build
-RUN make install
-
-# build for x86
-FROM --platform=linux/amd64 ubuntu:24.04 AS runtime
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    software-properties-common \
+    curl \
     libbz2-1.0 \
     libffi8 \
     libgdbm6 \
@@ -83,10 +36,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     xz-utils
 
-# copy artifact
-COPY --from=install /cinder /cinder
+ARG make_jobs
+ARG make_verbose=1
+ENV MAKE_JOBS="${make_jobs}" MAKE_VERBOSE="${make_verbose}"
+
+WORKDIR /cinder/build
+COPY --chmod=0755 cinder/ /cinder/src/
+
+RUN cd /cinder/src && (make -C /cinder/src distclean 2>/dev/null || true)
+RUN /cinder/src/configure --prefix=/cinder --enable-optimizations
+RUN make -j8 VERBOSE=$MAKE_VERBOSE
+RUN make install
+
+WORKDIR /root
+
+RUN git clone https://github.com/utahplt/static-python-perf.git
+RUN curl -LO https://github.com/helix-editor/helix/releases/download/25.01/helix-25.01-x86_64-linux.tar.xz && \
+    tar xf helix-25.01-x86_64-linux.tar.xz && \
+    mv helix-25.01-x86_64-linux /opt/helix && \
+    ln -s /opt/helix/hx /usr/local/bin/hx && \
+    rm helix-25.01-x86_64-linux.tar.xz
+
+RUN git clone https://github.com/robertmorelli/helix-setup.git && \
+    cd helix-setup && \
+    chmod +x install.sh && \
+    bash ./install.sh
+
 ENV PATH="/cinder/bin:$PATH"
 
-WORKDIR /cinder/src
 CMD ["/bin/bash"]
-
