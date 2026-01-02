@@ -36,20 +36,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     xz-utils
 
-ARG make_jobs
-ARG make_verbose=1
-ENV MAKE_JOBS="${make_jobs}" MAKE_VERBOSE="${make_verbose}"
-
-WORKDIR /cinder/build
 COPY --chmod=0755 cinder/ /cinder/src/
+# build (out-of-tree)
+WORKDIR /cinder/build
+RUN /cinder/src/configure --prefix=/cinder && \
+    make clean && \
+    make -j8 && \
+    make install
 
-RUN cd /cinder/src && (make -C /cinder/src distclean 2>/dev/null || true)
-RUN /cinder/src/configure --prefix=/cinder --enable-optimizations
-RUN make -j8 VERBOSE=$MAKE_VERBOSE
-RUN make install
-
+# install tools
 WORKDIR /root
-
 RUN git clone https://github.com/utahplt/static-python-perf.git
 RUN curl -LO https://github.com/helix-editor/helix/releases/download/25.01/helix-25.01-x86_64-linux.tar.xz && \
     tar xf helix-25.01-x86_64-linux.tar.xz && \
@@ -63,5 +59,4 @@ RUN git clone https://github.com/robertmorelli/helix-setup.git && \
     bash ./install.sh
 
 ENV PATH="/cinder/bin:$PATH"
-
 CMD ["/bin/bash"]
