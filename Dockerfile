@@ -26,19 +26,20 @@ RUN apt-get update && apt-get install -yq \
     xvfb \
     zlib1g-dev \
     python3 \
+    python3-pip \
     wget \
     software-properties-common \
     gnupg
 
 # copy the source into the container
 COPY --chmod=0755 cinder/ /cinder/
-COPY --chmod=0755 cinderx/ /cinderx/
 COPY --chmod=0755 static-python-perf/ /root/static-python-perf/
 
 # CINDER STUFF
 WORKDIR /cinder
 RUN ./configure --enable-optimizations CFLAGS="-Wno-error=maybe-uninitialized" && make -j4
 ENV PATH="/cinder:${PATH}"
+COPY de_typer.py /cinder/Tools/benchmarks/de_typer.py
 
 # DEV STUFF
 

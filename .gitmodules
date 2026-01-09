@@ -1,6 +1,7 @@
-[submodule "cinderx"]
-	path = cinderx
-	url = https://github.com/facebookincubator/cinderx.git
+[submodule "cinder"]
+	path = cinder
+	url = https://github.com/facebookincubator/cinder.git
+	branch = cinder/3.10
 [submodule "static-python-perf"]
 	path = static-python-perf
 	url = https://github.com/utahplt/static-python-perf.git
