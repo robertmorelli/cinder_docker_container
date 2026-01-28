@@ -48,3 +48,17 @@ The command now works:
 ```bash
 cd ~/static-python-perf/Benchmark/deltablue/advanced && python -X install-strict-loader -X jit -X jit-shadow-frame main.py
 ```
+
+## Note on Type Checking Behavior
+
+Static Python type enforcement works as follows:
+
+**Runtime-enforced types:**
+- `CheckedList[T]` - raises `TypeError` if you append/insert wrong type
+- `CheckedDict[K, V]` - raises `TypeError` if you set wrong key/value types
+
+**JIT hint types (not enforced at function boundaries):**
+- `int64`, `cbool`, `int32`, etc. - these tell the JIT to generate optimized code assuming the type is correct
+- If you pass wrong types, errors only occur when an incompatible operation is attempted (e.g., `"str" << 2` fails, but `"str" * 2` succeeds because Python strings support `*`)
+
+This is by design: Static Python prioritizes performance over safety for primitives. Use `Checked*` containers when you need runtime type enforcement.
