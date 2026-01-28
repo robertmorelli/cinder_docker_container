@@ -1,48 +1,60 @@
-FROM --platform=linux/amd64 ubuntu:24.04 AS build
-ENV DEBIAN_FRONTEND=noninteractive
+FROM --platform=linux/amd64 fedora:40 AS build
 
-# DEP STUFF
-RUN apt-get update && apt-get install -yq \
-    build-essential \
+# DEP STUFF - Fedora packages for building Python and cinderx
+RUN dnf install -y \
+    gcc \
+    gcc-c++ \
+    make \
     ccache \
     curl \
     cmake \
     gdb \
     git \
     lcov \
-    libbz2-dev \
-    libffi-dev \
-    libgdbm-dev \
-    libgdbm-compat-dev \
-    liblzma-dev \
-    libncurses5-dev \
-    libreadline6-dev \
-    libsqlite3-dev \
-    libssl-dev \
-    lzma \
-    lzma-dev \
-    tk-dev \
-    uuid-dev \
-    xvfb \
-    zlib1g-dev \
+    bzip2-devel \
+    libffi-devel \
+    gdbm-devel \
+    xz-devel \
+    ncurses-devel \
+    readline-devel \
+    sqlite-devel \
+    openssl-devel \
+    tk-devel \
+    libuuid-devel \
+    xorg-x11-server-Xvfb \
+    zlib-devel \
     python3 \
     python3-pip \
     wget \
-    software-properties-common \
-    gnupg
+    which \
+    expat-devel \
+    && dnf clean all
 
 # copy the source into the container
 COPY --chmod=0755 cinder/ /cinder/
 COPY --chmod=0755 static-python-perf/ /root/static-python-perf/
 
-# CINDER STUFF
+# CINDER STUFF - Build Python
 WORKDIR /cinder
-RUN ./configure --enable-optimizations CFLAGS="-Wno-error=maybe-uninitialized" && make -j4
+RUN ./configure \
+    CFLAGS="-Wno-error -Wno-error=strict-prototypes" \
+    CXXFLAGS="-Wno-error" \
+    && make -j$(nproc) CFLAGS="-Wno-error -Wno-error=strict-prototypes"
+
+# Build cinderx extension using the official build script
+WORKDIR /cinder/cinderx
+RUN ./build.sh --build-root /cinder --python-bin /cinder/python --output-dir /cinder
+
+# Verify the extension was built
+RUN ls -la /cinder/*.so || echo "Extension files:" && find /cinder -name "_cinderx*.so" -o -name "_static*.so" 2>/dev/null | head -20
+
+# Set up environment - use the in-tree python binary
 ENV PATH="/cinder:${PATH}"
+ENV PYTHONPATH="/cinder"
+
 COPY de_typer.py /cinder/Tools/benchmarks/de_typer.py
 
 # DEV STUFF
-
 WORKDIR /root
 
 # helix
