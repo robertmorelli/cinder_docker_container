@@ -1,0 +1,16 @@
+# Quiet, guarded profile for container login shells.
+# Keep optional tooling hooks when present, but avoid noisy startup warnings.
+
+if [[ -f /root/.git-bash-for-mac.sh ]]; then
+  # shellcheck disable=SC1091
+  source /root/.git-bash-for-mac.sh
+fi
+
+if [[ -x /opt/homebrew/bin/brew ]]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+
+if [[ -f /root/.cargo/env ]]; then
+  # shellcheck disable=SC1091
+  source /root/.cargo/env
+fi
