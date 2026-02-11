@@ -1206,6 +1206,48 @@ class CinderDetyperBoxUnbox:
                     new_body.append(child)
             module_node.body = new_body
 
+        def annotations_equal(a: expr, b: expr):
+            return ast_dump(a, include_attributes=False) == ast_dump(b, include_attributes=False)
+
+        idempotent_name_wrappers = box_primitive_types.union(scalar_construct_types).union(frozenset(("box",)))
+
+        class RedundantWrapperCleaner(NodeTransformer):
+            @staticmethod
+            def is_unary_name_call(node: expr, name: str):
+                return (
+                    isinstance(node, Call)
+                    and isinstance(node.func, Name)
+                    and node.func.id == name
+                    and len(node.args) == 1
+                    and len(node.keywords) == 0
+                )
+
+            @staticmethod
+            def is_cast_call(node: expr):
+                return (
+                    isinstance(node, Call)
+                    and isinstance(node.func, Name)
+                    and node.func.id == "cast"
+                    and len(node.args) == 2
+                    and len(node.keywords) == 0
+                )
+
+            def visit_Call(self, node: Call):
+                self.generic_visit(node)
+
+                if self.is_cast_call(node):
+                    annotation = node.args[0]
+                    inner = node.args[1]
+                    if self.is_cast_call(inner) and annotations_equal(annotation, inner.args[0]):
+                        return inner
+
+                if isinstance(node.func, Name) and node.func.id in idempotent_name_wrappers:
+                    inner = node.args[0] if len(node.args) == 1 and len(node.keywords) == 0 else None
+                    if inner is not None and self.is_unary_name_call(inner, node.func.id):
+                        return inner
+
+                return node
+
         def detype_walker(node: AST, antr_name: str | None = None):
             for child_node in iter_child_nodes(node):
                 is_fun = isinstance(child_node, FunctionDef)
@@ -1232,6 +1274,7 @@ class CinderDetyperBoxUnbox:
         tree = BoundaryCallRetyper(call_info, class_names, method_ret_fallback).visit(tree)
         if any(guide[TOP_LEVEL][pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_BODY]):
             detype_top_level_body(tree)
+        tree = RedundantWrapperCleaner().visit(tree)
         ensure_static_imports(tree, needed_imports)
         fix_missing_locations(tree)
         return split_lines(unparse(tree))
