@@ -424,3 +424,473 @@ Main implementation tasks:
 3. Implement `CallSiteTransformer` to wrap arguments in `box()`
 4. Handle edge cases (defaults, *args, method calls)
 5. Make file structure and JIT flags configurable for different benchmarks
+
+---
+
+# Part 2: Adapting for static-python-perf Benchmarks
+
+## Benchmark Structure Analysis
+
+The static-python-perf benchmarks have a **different structure** than what the current de_typer.py expects:
+
+### Current de_typer.py Expects:
+```
+benchmark/
+├── deltablue_static.py       # Runner file
+├── deltablue_static_lib.py   # Library file (gets detyped)
+└── jitlist_deltablue_static.txt
+```
+
+### static-python-perf Structure:
+```
+static-python-perf/Benchmark/
+├── deltablue/
+│   ├── advanced/main.py      # Fully typed
+│   ├── shallow/main.py       # Shallow types
+│   └── untyped/main.py       # No types
+├── richards/
+│   ├── advanced/main.py
+│   ├── shallow/main.py
+│   └── untyped/main.py
+... (28 benchmarks total)
+```
+
+**Key Insight**: Each benchmark is a **single self-contained `main.py` file**, not a runner + library pair.
+
+## Required Adaptation: `StaticPythonPerfDetyper`
+
+Create a new class that adapts the detyping approach for single-file benchmarks:
+
+```python
+class StaticPythonPerfDetyper:
+    """
+    Detyper adapted for static-python-perf single-file benchmarks.
+
+    Unlike CinderDetyper which expects runner + lib files,
+    this handles the single main.py structure.
+    """
+
+    def __init__(self,
+                 benchmark_path: str,  # e.g., "/root/static-python-perf/Benchmark/deltablue/advanced/main.py"
+                 python: str,
+                 scratch_dir: str,
+                 params: tuple[str, ...] = ()):
+        self.benchmark_path = benchmark_path
+        self.python = python
+        self.scratch_dir = scratch_dir
+        self.params = params
+
+        # Parse the file once
+        self._ast_cache = None
+        self.class_antrs, self.fun_names = self._enumerate_funs()
+
+    @cache
+    def _read_ast(self):
+        with open(self.benchmark_path, encoding="utf-8") as f:
+            return parse(f.read(), type_comments=True)
+
+    def _enumerate_funs(self):
+        """Same logic as CinderDetyper but for single file."""
+        # ... enumerate all functions in the file
+        pass
+```
+
+## Core Box-and-Convert Implementation
+
+### Step 1: Track Primitive Parameter Types
+
+```python
+PRIMITIVE_TYPES = frozenset({
+    'int8', 'int16', 'int32', 'int64',
+    'uint8', 'uint16', 'uint32', 'uint64',
+    'double', 'cbool', 'char', 'single'
+})
+
+def get_primitive_params(fn: FunctionDef) -> list[tuple[str, str]]:
+    """
+    Extract (param_name, type_name) for parameters with primitive types.
+    """
+    primitives = []
+    args = fn.args
+    for arg in chain(args.posonlyargs, args.args, args.kwonlyargs):
+        if arg.annotation:
+            type_name = _extract_type_name(arg.annotation)
+            if type_name in PRIMITIVE_TYPES:
+                primitives.append((arg.arg, type_name))
+    return primitives
+
+def _extract_type_name(annotation: expr) -> str | None:
+    """Extract simple type name from annotation."""
+    if isinstance(annotation, Name):
+        return annotation.id
+    return None
+```
+
+### Step 2: Rename Parameters and Insert Conversions
+
+```python
+def detype_with_conversions(fn: FunctionDef) -> None:
+    """
+    Transform a function to use box-and-convert pattern.
+
+    BEFORE:
+        def foo(x: int64, y: double) -> int64:
+            return x + int64(y)
+
+    AFTER:
+        def foo(_x, _y):
+            x: int64 = int64(_x)
+            y: double = double(_y)
+            return x + int64(y)
+    """
+    # 1. Get primitive params before clearing annotations
+    primitives = get_primitive_params(fn)
+
+    # 2. Rename params and clear annotations
+    param_map = {}  # old_name -> new_name
+    args = fn.args
+    for arg in chain(args.posonlyargs, args.args, args.kwonlyargs):
+        if arg.annotation:
+            type_name = _extract_type_name(arg.annotation)
+            if type_name in PRIMITIVE_TYPES:
+                old_name = arg.arg
+                new_name = f"_{old_name}"
+                param_map[old_name] = new_name
+                arg.arg = new_name
+        arg.annotation = None
+
+    # Clear vararg/kwarg annotations too
+    if args.vararg and args.vararg.annotation:
+        args.vararg.annotation = None
+    if args.kwarg and args.kwarg.annotation:
+        args.kwarg.annotation = None
+
+    # 3. Build conversion statements
+    conversion_stmts = []
+    for old_name, type_name in primitives:
+        new_name = param_map[old_name]
+        # x: int64 = int64(_x)
+        stmt = AnnAssign(
+            target=Name(id=old_name, ctx=Store()),
+            annotation=Name(id=type_name, ctx=Load()),
+            value=Call(
+                func=Name(id=type_name, ctx=Load()),
+                args=[Name(id=new_name, ctx=Load())],
+                keywords=[]
+            ),
+            simple=1
+        )
+        conversion_stmts.append(stmt)
+
+    # 4. Prepend to function body
+    fn.body = conversion_stmts + fn.body
+
+    # 5. Clear return type
+    fn.returns = None
+    fn.type_comment = None
+```
+
+### Step 3: Transform Call Sites
+
+```python
+class BoxCallSites(NodeTransformer):
+    """
+    Wrap arguments in box() when calling detyped functions.
+
+    BEFORE:
+        result = foo(my_x, my_y)
+
+    AFTER:
+        result = foo(box(my_x), box(my_y))
+    """
+
+    def __init__(self, detyped_functions: set[str], primitive_params: dict[str, list[str]]):
+        """
+        Args:
+            detyped_functions: Names of functions that were detyped
+            primitive_params: {func_name: [param_names_that_were_primitive]}
+        """
+        self.detyped_functions = detyped_functions
+        self.primitive_params = primitive_params
+
+    def visit_Call(self, node: Call) -> Call:
+        # Process children first (handle nested calls)
+        self.generic_visit(node)
+
+        func_name = self._get_func_name(node.func)
+        if func_name not in self.detyped_functions:
+            return node
+
+        # Get which params need boxing
+        params_to_box = self.primitive_params.get(func_name, [])
+
+        # Box positional args
+        new_args = []
+        for i, arg in enumerate(node.args):
+            # Skip self for method calls
+            if self._is_self(arg, i):
+                new_args.append(arg)
+            elif not self._already_boxed(arg):
+                new_args.append(self._wrap_in_box(arg))
+            else:
+                new_args.append(arg)
+        node.args = new_args
+
+        # Box keyword args
+        for kw in node.keywords:
+            if not self._already_boxed(kw.value):
+                kw.value = self._wrap_in_box(kw.value)
+
+        return node
+
+    def _get_func_name(self, func: expr) -> str | None:
+        if isinstance(func, Name):
+            return func.id
+        if isinstance(func, Attribute):
+            return func.attr
+        return None
+
+    def _is_self(self, arg: expr, index: int) -> bool:
+        return index == 0 and isinstance(arg, Name) and arg.id == "self"
+
+    def _already_boxed(self, expr: expr) -> bool:
+        return (isinstance(expr, Call) and
+                isinstance(expr.func, Name) and
+                expr.func.id == "box")
+
+    def _wrap_in_box(self, expr: expr) -> Call:
+        return Call(
+            func=Name(id="box", ctx=Load()),
+            args=[expr],
+            keywords=[]
+        )
+```
+
+### Step 4: Ensure Box Import
+
+```python
+def ensure_box_import(tree: Module) -> None:
+    """
+    Add 'box' to __static__ imports if not present.
+
+    static-python-perf benchmarks typically already have:
+        from __static__ import CheckedList, box, cast, cbool, clen, int64, inline
+
+    But we need to verify box is included.
+    """
+    for node in tree.body:
+        if isinstance(node, ImportFrom) and node.module == "__static__":
+            # Check if box is already imported
+            if any(alias.name == "box" for alias in node.names):
+                return
+            # Add box to existing import
+            node.names.append(alias(name="box", asname=None))
+            return
+
+    # No __static__ import found - add one
+    # Insert after other imports
+    insert_pos = 0
+    for i, node in enumerate(tree.body):
+        if isinstance(node, (Import, ImportFrom)):
+            insert_pos = i + 1
+
+    new_import = ImportFrom(
+        module="__static__",
+        names=[alias(name="box", asname=None)],
+        level=0
+    )
+    tree.body.insert(insert_pos, new_import)
+```
+
+## Complete Detyping Flow for static-python-perf
+
+```python
+class StaticPythonPerfDetyper:
+    # ... init and enumeration methods ...
+
+    def detype_by_permutation(self, perm: Permutation) -> str:
+        """
+        Apply box-and-convert pattern based on permutation.
+
+        For each function in the permutation that should be detyped:
+        1. Track which params had primitive types
+        2. Rename params (x -> _x) and clear annotations
+        3. Insert conversion statements (x: int64 = int64(_x))
+        4. Transform call sites to wrap args in box()
+        5. Ensure box is imported
+        """
+        tree = parse(self._read_source())
+        guide = dict(zip(self.fun_names, perm))
+
+        # Phase 1: Collect info about functions to detype
+        detyped_functions: set[str] = set()
+        primitive_params: dict[str, list[str]] = {}
+
+        for fn in self._walk_functions(tree):
+            q_name = self._get_qualified_name(fn)
+            if guide.get(q_name, False):
+                # This function should be detyped
+                primitives = get_primitive_params(fn)
+                primitive_params[fn.name] = [name for name, _ in primitives]
+                detyped_functions.add(fn.name)
+
+        # Phase 2: Apply transformations to functions
+        for fn in self._walk_functions(tree):
+            q_name = self._get_qualified_name(fn)
+            if guide.get(q_name, False):
+                detype_with_conversions(fn)
+
+        # Phase 3: Transform call sites
+        transformer = BoxCallSites(detyped_functions, primitive_params)
+        tree = transformer.visit(tree)
+
+        # Phase 4: Ensure box is imported
+        ensure_box_import(tree)
+
+        # Phase 5: Handle top-level if specified
+        if guide.get(TOP_LEVEL, False):
+            self._detype_top_level(tree)
+
+        fix_missing_locations(tree)
+        return unparse(tree)
+
+    def _walk_functions(self, tree: AST) -> Iterator[FunctionDef]:
+        """Yield all FunctionDef nodes in the tree."""
+        for node in ast.walk(tree):
+            if isinstance(node, FunctionDef):
+                yield node
+```
+
+## Example: deltablue Benchmark Transformation
+
+### Before (typed):
+```python
+def chain_test(n: int64) -> None:
+    planner = recreate_planner()
+    prev: Variable | None = None
+    # ...
+    i: int64 = 0
+    while i < n + 1:
+        name = "v%s" % box(i)
+        # ...
+```
+
+### After (detyped with box-and-convert):
+```python
+def chain_test(_n):
+    n: int64 = int64(_n)  # Safe conversion
+    planner = recreate_planner()
+    prev = None  # Annotation removed
+    # ...
+    i: int64 = 0  # Local vars inside function body stay typed
+    while i < n + 1:
+        name = "v%s" % box(i)
+        # ...
+
+# At call sites:
+chain_test(box(n))  # Primitive boxed before crossing boundary
+```
+
+## Running Modes for static-python-perf
+
+### Mode 1: Compare Typing Levels
+Compare the existing versions:
+```bash
+# Run advanced (fully typed)
+python -X jit /root/static-python-perf/Benchmark/deltablue/advanced/main.py
+
+# Run shallow
+python -X jit /root/static-python-perf/Benchmark/deltablue/shallow/main.py
+
+# Run untyped
+python -X jit /root/static-python-perf/Benchmark/deltablue/untyped/main.py
+```
+
+### Mode 2: Gradual Detyping Experiment
+```python
+# Use the adapted detyper
+detyper = StaticPythonPerfDetyper(
+    benchmark_path="/root/static-python-perf/Benchmark/deltablue/advanced/main.py",
+    python="/cinder/python",
+    scratch_dir="/tmp/detype_experiments"
+)
+
+# Run permutation experiments
+detyper.find_permutation_errors(samples=50, granularity=1)
+```
+
+### Mode 3: Find Minimum Boxing
+```python
+# Find which expressions need boxing for each permutation
+detyper.find_permutation_is_boxable(samples=50)
+```
+
+## Implementation Checklist
+
+1. [x] Create `StaticPythonPerfDetyper` class
+   - [x] Single-file parsing (no runner/lib split)
+   - [x] Function enumeration for single file
+   - [x] Permutation naming/caching
+
+2. [x] Implement box-and-convert pattern
+   - [x] `get_primitive_params()` - extract primitive type info
+   - [x] `detype_with_conversions()` - rename + insert conversions
+   - [x] `BoxCallSites` transformer - wrap call args in box()
+   - [x] `ensure_box_import()` - add box to imports
+
+3. [x] Handle edge cases
+   - [x] Default arguments: `def foo(x: int64 = 0)` → `def foo(_x=0)`
+   - [x] Method calls: don't box `self`
+   - [x] Already boxed expressions
+   - [x] *args/**kwargs with primitive annotations
+   - [x] Nested calls: `foo(bar(x))` → `foo(box(bar(box(x))))`
+
+4. [x] Execution infrastructure
+   - [x] JIT flags for static-python-perf
+   - [x] Scratch directory management
+   - [x] Results collection and analysis
+
+5. [ ] Testing
+   - [ ] Unit tests for AST transformations
+   - [ ] Integration test with simple benchmark
+   - [ ] Full test with deltablue
+
+## Files Created/Modified
+
+1. **Created**: `static_python_perf_detyper.py`
+   - Contains `StaticPythonPerfDetyper` class
+   - Box-and-convert implementation (`detype_with_conversions`, `BoxCallSites`)
+   - Single-file benchmark handling
+   - Experiment running infrastructure
+
+2. **Created**: `run_detype_experiment.py`
+   - CLI wrapper for running experiments
+   - Commands: `--list`, `--test`, `--show-detyped`, `--detype-indices`
+   - Results collection
+
+3. **Modified**: `Dockerfile`
+   - Copies all detyper scripts to `/cinder/Tools/benchmarks/`
+   - Installs `black` for code formatting
+   - Creates `detype-experiment` symlink for easy access
+
+## Usage in Docker Container
+
+```bash
+# List available benchmarks
+detype-experiment --list
+
+# Quick test (runs typed + fully detyped)
+detype-experiment deltablue --test
+
+# Show detyped source code
+detype-experiment deltablue --show-detyped
+
+# Run full experiment
+detype-experiment deltablue --samples 50
+
+# Detype specific functions
+detype-experiment deltablue --detype-indices 0,3,5
+
+# Use different typing level
+detype-experiment deltablue --test --typing-level shallow
+```
