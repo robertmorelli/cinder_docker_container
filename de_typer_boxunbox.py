@@ -725,10 +725,54 @@ class CinderDetyperBoxUnbox:
                     out.pop(fun_name, None)
             return out
 
+        def collect_class_field_annotations(module_node: AST):
+            field_map: dict[str, dict[str, expr]] = {}
+
+            class FieldCollector(NodeTransformer):
+                def __init__(self):
+                    self.class_stack: list[str] = []
+
+                def visit_ClassDef(self, node: ClassDef):
+                    self.class_stack.append(node.name)
+                    self.generic_visit(node)
+                    self.class_stack.pop()
+                    return node
+
+                def visit_AnnAssign(self, node: AnnAssign):
+                    if len(self.class_stack) == 0:
+                        return node
+                    target = node.target
+                    if isinstance(target, Attribute) and isinstance(target.value, Name) and target.value.id == "self":
+                        class_name = self.class_stack[-1]
+                        field_name = target.attr
+                        annotation = node.annotation
+                        assert annotation is not None, "field annotation missing"
+                        class_fields = field_map.setdefault(class_name, {})
+                        existing = class_fields.get(field_name)
+                        if existing is None:
+                            class_fields[field_name] = deepcopy(annotation)
+                        else:
+                            assert (
+                                ast_dump(existing, include_attributes=False)
+                                == ast_dump(annotation, include_attributes=False)
+                            ), f"conflicting field annotation for {class_name}.{field_name}"
+                    return node
+
+            FieldCollector().visit(deepcopy(module_node))
+            return field_map
+
         class BodyDetyper(NodeTransformer):
-            def __init__(self, pass_state: PassState, return_annotation: expr | None):
+            def __init__(
+                self,
+                pass_state: PassState,
+                return_annotation: expr | None,
+                class_name: str | None,
+                field_annotations: dict[str, dict[str, expr]],
+            ):
                 self.pass_state = pass_state
                 self.return_annotation = return_annotation
+                self.class_name = class_name
+                self.field_annotations = field_annotations
                 self.body_variant_enabled = any(pass_state[pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_BODY])
                 return_pass_name = pass_name_for_annotation(PASS_SCOPE_RETURN, return_annotation)
                 self.box_returns = (
@@ -736,11 +780,90 @@ class CinderDetyperBoxUnbox:
                     and pass_state[return_pass_name]
                     and annotation_policy(return_annotation) == "box"
                 )
+                self.primitive_reproject_annotations: dict[str, expr] = {}
+
+            def _field_annotation(self, node: Attribute) -> expr | None:
+                if self.class_name is None:
+                    return None
+                if not isinstance(node.value, Name):
+                    return None
+                if node.value.id != "self":
+                    return None
+                class_fields = self.field_annotations.get(self.class_name)
+                if class_fields is None:
+                    return None
+                annotation = class_fields.get(node.attr)
+                return deepcopy(annotation) if annotation is not None else None
+
+            def _field_pass_enabled(self, annotation: expr | None):
+                pass_name = pass_name_for_annotation(PASS_SCOPE_BODY, annotation)
+                return pass_name is not None and self.pass_state[pass_name]
+
+            def _embed_field_write(self, node: expr, annotation: expr | None):
+                policy = annotation_policy(annotation)
+                if policy == "box":
+                    coerced = coerce_primitive(annotation, node)
+                    if is_box_call(coerced):
+                        return coerced
+                    return wrap_box(coerced)
+                if policy == "construct":
+                    if is_passthrough_container_annotation(annotation):
+                        return node
+                    return wrap_construct(annotation, node)
+                if policy == "cast":
+                    return wrap_cast_or_construct(annotation, node)
+                return node
+
+            def _project_field_read(self, node: expr, annotation: expr | None):
+                policy = annotation_policy(annotation)
+                if policy == "box":
+                    return coerce_primitive(annotation, node)
+                if policy == "construct":
+                    if is_passthrough_container_annotation(annotation):
+                        return node
+                    return wrap_construct(annotation, node)
+                if policy == "cast":
+                    return wrap_cast_or_construct(annotation, node)
+                return node
 
             def visit_Assign(self, node: Assign):
                 self.generic_visit(node)
+                if len(node.targets) == 1 and isinstance(node.targets[0], Name):
+                    target_name = node.targets[0].id
+                    if target_name in self.primitive_reproject_annotations:
+                        annotation = deepcopy(self.primitive_reproject_annotations[target_name])
+                        value = node.value
+                        assert value is not None, "assign without value unsupported"
+                        coerced = coerce_primitive(annotation, value)
+                        if not is_box_call(coerced):
+                            node.value = wrap_box(coerced)
+                        else:
+                            node.value = coerced
+                if len(node.targets) == 1 and isinstance(node.targets[0], Attribute):
+                    field_ann = self._field_annotation(node.targets[0])
+                    if field_ann is not None and self._field_pass_enabled(field_ann):
+                        value = node.value
+                        assert value is not None, "field assign without value unsupported"
+                        node.value = self._embed_field_write(value, field_ann)
                 node.type_comment = None
                 return node
+
+            def visit_Name(self, node: Name):
+                # Primitive body detype can make a typed local dynamic; reproject on use.
+                if isinstance(node.ctx, Load) and node.id in self.primitive_reproject_annotations:
+                    return coerce_primitive(deepcopy(self.primitive_reproject_annotations[node.id]), node)
+                return node
+
+            def visit_Attribute(self, node: Attribute):
+                self.generic_visit(node)
+                if not isinstance(node.ctx, Load):
+                    return node
+                field_ann = self._field_annotation(node)
+                if field_ann is None:
+                    return node
+                if not self._field_pass_enabled(field_ann):
+                    return node
+                return self._project_field_read(node, field_ann)
 
             def visit_AnnAssign(self, node: AnnAssign):
                 self.generic_visit(node)
@@ -763,6 +886,17 @@ class CinderDetyperBoxUnbox:
 
                 if value is None:
                     return node
+                if isinstance(node.target, Attribute):
+                    field_ann = self._field_annotation(node.target)
+                    if field_ann is not None:
+                        assert (
+                            ast_dump(field_ann, include_attributes=False)
+                            == ast_dump(annotation, include_attributes=False)
+                        ), f"field annotation mismatch on {self.class_name}.{node.target.attr}"
+                        # Preserve class field declaration semantics; field read/write handling applies separately.
+                        return node
+                if policy == "box" and isinstance(node.target, Name) and node.value is not None:
+                    self.primitive_reproject_annotations[node.target.id] = deepcopy(annotation)
                 return Assign(targets=[node.target], value=value, type_comment=None)
 
             def visit_Return(self, node: Return):
@@ -939,7 +1073,7 @@ class CinderDetyperBoxUnbox:
 
                 return self._wrap_return(node, ret_ann)
 
-        def detype_function(fn: FunctionDef, pass_state: PassState):
+        def detype_function(fn: FunctionDef, pass_state: PassState, class_name: str | None):
             return_annotation = deepcopy(fn.returns)
             changed_signature, conversion_stmts = _detype_params(fn, pass_state)
 
@@ -959,7 +1093,12 @@ class CinderDetyperBoxUnbox:
             if changed_signature:
                 fn.type_comment = None
 
-            body_detyper = BodyDetyper(pass_state=pass_state, return_annotation=return_annotation)
+            body_detyper = BodyDetyper(
+                pass_state=pass_state,
+                return_annotation=return_annotation,
+                class_name=class_name,
+                field_annotations=class_field_annotations,
+            )
             new_body = []
             for stmt in fn.body:
                 new_stmt = body_detyper.visit(stmt)
@@ -1022,11 +1161,12 @@ class CinderDetyperBoxUnbox:
                             merge_call_info(call_info, q_fun_name, child_node, skip_implicit_first=False, pass_state=pass_state)
                         else:
                             merge_call_info(call_info, q_fun_name, child_node, skip_implicit_first=True, pass_state=pass_state)
-                        detype_function(child_node, pass_state)
+                        detype_function(child_node, pass_state, antr_name)
                 elif is_class:
                     detype_walker(child_node, antr_name=child_node.name)
 
         call_info: dict[GuideKey, dict] = dict()
+        class_field_annotations = collect_class_field_annotations(tree)
         class_names = set(class_name for class_name in self.class_antrs.keys() if class_name is not None)
         needed_imports: set[str] = set()
 
