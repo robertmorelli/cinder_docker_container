@@ -5,6 +5,6 @@ def inc(x: int64):
     return box(int64(x + 1))
 
 
-def use(v: int64):
+def use(v: int64) -> int64:
     out: int64 = int64(inc(v))
-    return box(int64(out))
+    return out

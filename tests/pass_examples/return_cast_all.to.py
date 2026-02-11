@@ -9,6 +9,6 @@ def make_foo():
     return Foo()
 
 
-def use():
+def use() -> Foo:
     out: Foo = cast(Foo, make_foo())
     return out

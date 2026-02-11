@@ -10,7 +10,6 @@ def echo(_foo) -> Foo:
     return foo
 
 
-def use(_x) -> Foo:
-    x: Foo = cast(Foo, _x)
+def use(x: Foo) -> Foo:
     out: Foo = echo(cast(Foo, x))
     return out
