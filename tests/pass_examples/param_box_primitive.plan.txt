@@ -1,0 +1,2 @@
+# Detype only add_one for this example.
+add_one

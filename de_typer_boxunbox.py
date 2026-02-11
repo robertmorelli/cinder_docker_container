@@ -1009,12 +1009,33 @@ class CinderDetyperBoxUnbox:
             fn.body = [cleaned_return]
             return True
 
+        def collect_primitive_name_annotations(fn: FunctionDef):
+            out: dict[str, expr] = {}
+
+            for a in chain(fn.args.posonlyargs, fn.args.args, fn.args.kwonlyargs):
+                if is_primitive_annotation(a.annotation):
+                    out[a.arg] = deepcopy(a.annotation)
+
+            def walk(node: AST):
+                if isinstance(node, AnnAssign):
+                    if isinstance(node.target, Name) and is_primitive_annotation(node.annotation):
+                        out[node.target.id] = deepcopy(node.annotation)
+                for child in iter_child_nodes(node):
+                    if isinstance(child, (FunctionDef, ClassDef)):
+                        continue
+                    walk(child)
+
+            for stmt in fn.body:
+                walk(stmt)
+            return out
+
         class BoundaryCallRetyper(NodeTransformer):
             def __init__(self, call_info, class_names, method_ret_fallback):
                 self.call_info = call_info
                 self.class_names = class_names
                 self.method_ret_fallback = method_ret_fallback
                 self.class_stack: list[str] = []
+                self.primitive_name_stack: list[dict[str, expr]] = []
 
             def visit_ClassDef(self, node: ClassDef):
                 self.class_stack.append(node.name)
@@ -1022,11 +1043,28 @@ class CinderDetyperBoxUnbox:
                 self.class_stack.pop()
                 return node
 
+            def visit_FunctionDef(self, node: FunctionDef):
+                self.primitive_name_stack.append(collect_primitive_name_annotations(node))
+                self.generic_visit(node)
+                self.primitive_name_stack.pop()
+                return node
+
+            def _matching_primitive_name_annotation(self, node: expr, annotation: expr | None):
+                if not (isinstance(node, Name) and isinstance(annotation, Name) and is_primitive_annotation(annotation)):
+                    return False
+                if len(self.primitive_name_stack) == 0:
+                    return False
+                known = self.primitive_name_stack[-1].get(node.id)
+                return isinstance(known, Name) and known.id == annotation.id
+
             def _embed_boundary_arg(self, node: expr, annotation: expr | None):
                 policy = annotation_policy(annotation)
                 if policy == "box":
                     if is_box_call(node):
                         return node
+                    # If this name is already known to be the same primitive, avoid redundant T(x) wrapping.
+                    if self._matching_primitive_name_annotation(node, annotation):
+                        return wrap_box(node)
                     return wrap_box(coerce_primitive(annotation, node))
                 if policy == "construct":
                     if is_passthrough_container_annotation(annotation):
