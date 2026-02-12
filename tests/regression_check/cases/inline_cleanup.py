@@ -1,7 +1,10 @@
-from __static__ import inline, int64
+from __static__ import inline
+
+
+class Foo:
+    pass
 
 
 @inline
-def project(_x) -> int64:
-    x: int64 = int64(_x)
+def project(x: Foo) -> Foo:
     return x

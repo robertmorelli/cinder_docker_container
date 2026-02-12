@@ -11,5 +11,7 @@ Current guardrails in `de_typer_boxunbox.py` intentionally skip or force-typed c
 - `body_cast_all`: `Optional[...]` and unions are skipped (no flow narrowing).
 - `nogo_types`: annotations rooted at iterator/generator/protocol/callable types are never detyped.
   - `Iterator`, `Iterable`, `Generator`, `AsyncIterator`, `AsyncGenerator`, `Coroutine`, `Protocol`, `Callable`
+- Imported nominal cast targets are a known limitation:
+  - boundary `cast(Population, dyn)` / `cast(module.Type, dyn)` can fail static typecheck (`cast to unknown type`).
 - Ambiguous method names across unrelated class hierarchies are no-go for unresolved attribute-call boundary rewrites.
 - Pure function calls (`foo(...)`) are still eligible for normal boundary rewriting.

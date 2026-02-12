@@ -34,6 +34,18 @@
 - Static check command used by detyper workflows:
   - `python -m cinderx.compiler --static`
 
+## Added Limitation: Imported Nominal Cast Targets
+- Known limitation family:
+  - boundary rewrites that emit `cast(Name, dyn)` or `cast(module.Type, dyn)` for imported nominal types can fail with:
+    - `TypedSyntaxError: cast to unknown type`
+- Practical impact:
+  - multi-file imported nominal benchmarks (for example `sample_fsm`) can fail for this reason.
+  - this is not a typical single-file benchmark shape.
+- Policy:
+  - keep this as a known limitation signal in regressions.
+  - default fuzz list excludes `sample_fsm` so fuzzing finds new transform bugs in single-file targets first.
+  - strict mode now asserts on this shape with limitation key `imported_nominal_cast`.
+
 ## Box/Unbox Strategy (Current Intent)
 - Transforming is now split into independent per-function passes, not one all-or-nothing detype.
 - Per function, pass state is keyed by qualified function identity (same strategy family as `de_typer.py`):

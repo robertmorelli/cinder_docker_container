@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from hashlib import sha1
 from pathlib import Path
+from subprocess import run
 from typing import Any
 
 
@@ -44,6 +47,32 @@ def last_error(stderr: str):
     return lines[-1] if lines else "<no stderr>"
 
 
+def typecheck_original_source(source_path: Path, python_bin: str, scratch: str):
+    scratch_dir = Path(scratch).resolve()
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+    source_text = source_path.read_text(encoding="utf-8")
+    digest = sha1((str(source_path) + "\n" + source_text).encode("utf-8")).hexdigest()[:16]
+    probe_file = scratch_dir / f"baseline_{source_path.stem}_{digest}.py"
+    probe_file.write_text(source_text, encoding="utf-8")
+
+    env = dict(os.environ)
+    py_paths = [str(source_path.parent)]
+    current_py_path = env.get("PYTHONPATH")
+    if current_py_path:
+        py_paths.append(current_py_path)
+    env["PYTHONPATH"] = ":".join(py_paths)
+    env["PYTHONPYCACHEPREFIX"] = str(scratch_dir / "__pycache__")
+
+    return run(
+        (python_bin, "-m", "cinderx.compiler", "--static", "-c", str(probe_file)),
+        capture_output=True,
+        text=True,
+        cwd=str(source_path.parent),
+        env=env,
+    )
+
+
 def run_case(case: dict[str, Any], root: Path, python_bin: str, scratch: str):
     name = case["name"]
     file_path = (root / case["file"]).resolve()
@@ -53,6 +82,10 @@ def run_case(case: dict[str, Any], root: Path, python_bin: str, scratch: str):
     expect = case.get("expect", "typecheck_ok")
     err_contains = case.get("error_contains")
     plan_items = list(case.get("plan", []))
+
+    baseline_result = typecheck_original_source(file_path, python_bin, scratch)
+    if baseline_result.returncode != 0:
+        return False, f"baseline typecheck failed: {last_error(baseline_result.stderr)}"
 
     detyper = CinderDetyperBoxUnbox(
         benchmark_file_name=str(file_path),
@@ -137,6 +170,23 @@ def print_pass_summary(case_results: list[dict[str, Any]]):
                 print(f"  - {row['name']}: {row['detail']}")
 
 
+def print_signal_group_summary(case_results: list[dict[str, Any]]):
+    print("\n=== signal groups ===")
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in case_results:
+        group = row.get("signal_group", "core")
+        buckets.setdefault(group, []).append(row)
+
+    for group in sorted(buckets.keys()):
+        rows = buckets[group]
+        fail_rows = [row for row in rows if not row["ok"]]
+        state = "ok" if len(fail_rows) == 0 else "fail"
+        print(f"{group}: {state} ({len(rows) - len(fail_rows)}/{len(rows)})")
+        if len(fail_rows) > 0:
+            for row in fail_rows:
+                print(f"  - {row['name']}: {row['detail']}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default="tests/regression_check/manifest.json")
@@ -169,6 +219,7 @@ def main() -> int:
         name = case["name"]
         enabled_passes = list(case.get("enabled_passes", []))
         expect = case.get("expect", "typecheck_ok")
+        signal_group = case.get("signal_group", "core")
         ok, detail = run_case(case, root, args.python, args.scratch)
         print(f"{name}: {'ok' if ok else 'fail'}")
         case_results.append(
@@ -178,6 +229,7 @@ def main() -> int:
                 "detail": detail,
                 "enabled_passes": enabled_passes,
                 "expect": expect,
+                "signal_group": signal_group,
             }
         )
         if not ok:
@@ -185,6 +237,7 @@ def main() -> int:
 
     if args.summary_by_pass:
         print_pass_summary(case_results)
+        print_signal_group_summary(case_results)
 
     if len(failures) == 0:
         print(f"all regression cases passed ({len(selected)} cases)")

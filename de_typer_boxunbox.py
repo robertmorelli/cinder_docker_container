@@ -103,8 +103,12 @@ PASS_SCOPES = (PASS_SCOPE_PARAM, PASS_SCOPE_BODY, PASS_SCOPE_RETURN)
 TRANSFORM_LIMITATIONS = (
     "class_members: body detyping never rewrites self.<field> declarations, reads, or writes",
     "top_level: module AnnAssign body detyping is always forced typed (plan keeps TOP_LEVEL bit)",
+    "decl_only_annassign: body detyping skips declaration-only locals (`x: T`) to avoid dynamic seed / undefined-name edge cases",
+    "vararg_param: detyping annotated *args/**kwargs parameters is unsupported",
+    "starred_boundary_call: call-boundary rewrite does not support *args/**kwargs expansion at rewritten call sites",
     "body_cast_all: Optional[...] and union annotations are skipped (flow narrowing unsupported)",
     "nogo_types: Iterator/Iterable/Generator/Async*/Coroutine/Protocol/Callable annotations are never detyped",
+    "imported_nominal_cast: cast(Name|module.Type, dyn) for imported nominal types is not reliably supported by the static compiler",
     "ambiguous_method_names: unresolved attribute calls are not boundary-rewritten when a method name appears in multiple unrelated class hierarchies",
 )
 
@@ -202,12 +206,14 @@ class CinderDetyperBoxUnbox:
         python: str,
         scratch_dir: str,
         params: tuple[str, ...] = (),
+        strict_limitations: bool = False,
     ):
         t1 = Timer("init")
         self.params = params
         self.python = python
         self.benchmark_file_name = benchmark_file_name
         self.scratch_dir = scratch_dir
+        self.strict_limitations = strict_limitations
         self.benchmark_dir = path.dirname(path.abspath(benchmark_file_name))
 
         t2 = Timer("enumerate")
@@ -219,6 +225,11 @@ class CinderDetyperBoxUnbox:
         assert len(self.plan_names) <= len(self.fun_names), "plan name enumeration mismatch"
         t2.end()
         t1.end()
+
+    def _strict_fail(self, limitation_name: str, detail: str):
+        if not self.strict_limitations:
+            return
+        assert False, f"strict limitation hit [{limitation_name}]: {detail}"
 
     def fun_count(self):
         return len(self.fun_names)
@@ -241,6 +252,58 @@ class CinderDetyperBoxUnbox:
         return parse(CinderDetyperBoxUnbox.read_text(self.benchmark_file_name), type_comments=True)
 
     def _detype_funs(self, tree: AST, guide: GuideType) -> str:
+        def strict_fail(limitation_name: str, detail: str):
+            self._strict_fail(limitation_name, detail)
+
+        def is_simple_type_expr(node: expr):
+            if isinstance(node, Name):
+                return True
+            if isinstance(node, Attribute):
+                return is_simple_type_expr(node.value)
+            if isinstance(node, Subscript):
+                return is_simple_type_expr(node.value) and is_simple_type_expr(node.slice)
+            if isinstance(node, AstTuple):
+                return all(is_simple_type_expr(item) for item in node.elts)
+            if isinstance(node, Constant):
+                return node.value is None
+            return False
+
+        def collect_one_hop_cast_aliases(module_node: AST):
+            assert hasattr(module_node, "body"), "module body missing for alias collection"
+            aliases: dict[str, expr] = {}
+            blocked: set[str] = set()
+            for stmt in module_node.body:
+                if not (isinstance(stmt, Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], Name)):
+                    continue
+                alias_name = stmt.targets[0].id
+                if alias_name in blocked:
+                    continue
+                if alias_name in aliases:
+                    aliases.pop(alias_name, None)
+                    blocked.add(alias_name)
+                    continue
+                if not isinstance(stmt.value, expr):
+                    blocked.add(alias_name)
+                    continue
+                if not is_simple_type_expr(stmt.value):
+                    blocked.add(alias_name)
+                    continue
+                aliases[alias_name] = deepcopy(stmt.value)
+            return aliases
+
+        def collect_imported_symbols(module_node: AST):
+            imported_names: set[str] = set()
+            imported_module_aliases: set[str] = set()
+            assert hasattr(module_node, "body"), "module body missing for import collection"
+            for stmt in module_node.body:
+                if isinstance(stmt, ImportFrom):
+                    for imported in stmt.names:
+                        imported_names.add(imported.asname or imported.name)
+                elif isinstance(stmt, Import):
+                    for imported in stmt.names:
+                        imported_module_aliases.add(imported.asname or imported.name.split(".")[0])
+            return imported_names, imported_module_aliases
+
         @cache
         def get_fun_q_names(fun_name: str, antr_name=None):
             assert antr_name in self.class_antrs, "class ancestor graph incomplete"
@@ -275,8 +338,27 @@ class CinderDetyperBoxUnbox:
             needed_imports.add("box")
             return Call(func=Name(id="box", ctx=Load()), args=[node], keywords=[])
 
+        one_hop_cast_aliases = collect_one_hop_cast_aliases(tree)
+        imported_symbols, imported_module_aliases = collect_imported_symbols(tree)
+
         def wrap_cast(annotation: expr, node: expr):
             def normalize_cast_annotation(annotation_expr: expr):
+                if isinstance(annotation_expr, Name) and annotation_expr.id in one_hop_cast_aliases:
+                    annotation_expr = deepcopy(one_hop_cast_aliases[annotation_expr.id])
+                if isinstance(annotation_expr, Name) and annotation_expr.id in imported_symbols:
+                    strict_fail(
+                        "imported_nominal_cast",
+                        f"cast target uses imported name {annotation_expr.id} in {self.benchmark_file_name}",
+                    )
+                if (
+                    isinstance(annotation_expr, Attribute)
+                    and isinstance(annotation_expr.value, Name)
+                    and annotation_expr.value.id in imported_module_aliases
+                ):
+                    strict_fail(
+                        "imported_nominal_cast",
+                        f"cast target uses imported module attribute {annotation_expr.value.id}.{annotation_expr.attr} in {self.benchmark_file_name}",
+                    )
                 if isinstance(annotation_expr, AstTuple):
                     return Subscript(
                         value=Name(id="tuple", ctx=Load()),
@@ -363,6 +445,16 @@ class CinderDetyperBoxUnbox:
         def _detype_params(fn: FunctionDef, pass_state: PassState):
             used_names = set(a.arg for a in chain(fn.args.posonlyargs, fn.args.args, fn.args.kwonlyargs))
             conversion_stmts: list[AnnAssign] = []
+            param_pass_enabled = any(pass_state[pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_PARAM])
+            if param_pass_enabled:
+                for a in chain(fn.args.posonlyargs, fn.args.args, fn.args.kwonlyargs):
+                    annotation = getattr(a, "annotation", None)
+                    decision = decide_param_strategy(annotation)
+                    if decision.strategy == "nogo":
+                        strict_fail(
+                            "nogo_types",
+                            f"param annotation unsupported in {fn.name}.{a.arg}: {ast_dump(annotation, include_attributes=False)}",
+                        )
             changed = False
             for pass_apply in PARAM_PASS_APPLIERS:
                 changed = pass_apply(fn, pass_state, used_names, conversion_stmts, pass_ctx) or changed
@@ -376,6 +468,14 @@ class CinderDetyperBoxUnbox:
             return None
 
         def _detype_return(fn: FunctionDef, pass_state: PassState):
+            return_pass_enabled = any(pass_state[pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_RETURN])
+            if return_pass_enabled:
+                decision = decide_return_strategy(fn.returns)
+                if decision.strategy == "nogo":
+                    strict_fail(
+                        "nogo_types",
+                        f"return annotation unsupported in {fn.name}: {ast_dump(fn.returns, include_attributes=False)}",
+                    )
             changed = False
             for pass_apply in RETURN_PASS_APPLIERS:
                 changed = pass_apply(fn, pass_state, pass_ctx) or changed
@@ -707,6 +807,11 @@ class CinderDetyperBoxUnbox:
                         node.value = self._embed_local_write(value, annotation)
                 if len(node.targets) == 1 and isinstance(node.targets[0], Attribute):
                     if self.skip_self_property_detype and self._is_self_attribute(node.targets[0]):
+                        if self.body_variant_enabled:
+                            strict_fail(
+                                "class_members",
+                                f"self field assign skipped in {self.function_name} at line {getattr(node, 'lineno', '?')}",
+                            )
                         node.type_comment = None
                         return node
                 node.type_comment = None
@@ -721,6 +826,11 @@ class CinderDetyperBoxUnbox:
             def visit_Attribute(self, node: Attribute):
                 self.generic_visit(node)
                 if self.skip_self_property_detype and self._is_self_attribute(node):
+                    if self.body_variant_enabled:
+                        strict_fail(
+                            "class_members",
+                            f"self field read skipped in {self.function_name} at line {getattr(node, 'lineno', '?')}",
+                        )
                     return node
                 if not isinstance(node.ctx, Load):
                     return node
@@ -734,15 +844,45 @@ class CinderDetyperBoxUnbox:
             def visit_AnnAssign(self, node: AnnAssign):
                 self.generic_visit(node)
                 if self.skip_self_property_detype and self._is_self_attribute(node.target):
+                    if self.body_variant_enabled:
+                        strict_fail(
+                            "class_members",
+                            f"self field annassign skipped in {self.function_name} at line {getattr(node, 'lineno', '?')}",
+                        )
+                    return node
+                # Declaration-only local annotations are intentionally kept typed.
+                # Replacing them with dynamic placeholders (`x = None`) introduces
+                # invalid flow for primitive locals and can also change name-binding behavior.
+                if node.value is None:
+                    if self.body_variant_enabled:
+                        strict_fail(
+                            "decl_only_annassign",
+                            f"declaration-only AnnAssign skipped in {self.function_name} at line {getattr(node, 'lineno', '?')}",
+                        )
                     return node
                 annotation = node.annotation
                 assert annotation is not None, "annassign without annotation unsupported"
                 decision = decide_body_strategy(annotation)
                 policy = decision.strategy
+                pass_name = decision.pass_name
+                if policy == "nogo" and self.body_variant_enabled:
+                    strict_fail(
+                        "nogo_types",
+                        f"body annotation unsupported in {self.function_name} at line {getattr(node, 'lineno', '?')}: {ast_dump(annotation, include_attributes=False)}",
+                    )
                 if policy in ("passthrough", "nogo"):
                     return node
                 if not self.body_variant_enabled:
                     return node
+                if (
+                    pass_name == "body_cast_all"
+                    and self.pass_state[pass_name]
+                    and is_optional_or_union_annotation(annotation)
+                ):
+                    strict_fail(
+                        "body_cast_all_optional_union",
+                        f"optional/union body annotation skipped in {self.function_name} at line {getattr(node, 'lineno', '?')}",
+                    )
 
                 if policy in ("box", "construct", "cast"):
                     value = _detype_body(annotation, node.value, self.pass_state)
@@ -750,6 +890,11 @@ class CinderDetyperBoxUnbox:
                     assert False, f"unknown body detype policy: {policy}"
 
                 if value is None:
+                    if pass_name is not None and self.pass_state[pass_name]:
+                        strict_fail(
+                            "strategy_resolution",
+                            f"no body rewrite produced for {self.function_name} at line {getattr(node, 'lineno', '?')}",
+                        )
                     return node
                 if isinstance(node.target, Name):
                     self.local_reproject_annotations[node.target.id] = deepcopy(annotation)
@@ -790,6 +935,7 @@ class CinderDetyperBoxUnbox:
                 method_arg_fallback,
                 field_annotations,
                 ambiguous_method_names,
+                strict_limitations: bool,
             ):
                 self.call_info = call_info
                 self.class_names = class_names
@@ -797,6 +943,7 @@ class CinderDetyperBoxUnbox:
                 self.method_arg_fallback = method_arg_fallback
                 self.field_annotations = field_annotations
                 self.ambiguous_method_names = ambiguous_method_names
+                self.strict_limitations = strict_limitations
                 self.class_stack: list[str] = []
                 self.primitive_name_stack: list[dict[str, expr]] = []
 
@@ -912,10 +1059,20 @@ class CinderDetyperBoxUnbox:
                     q_fun_name = self._resolve_method_q_name(node)
                     if q_fun_name is None:
                         if node.func.attr in self.ambiguous_method_names:
+                            if self.strict_limitations:
+                                strict_fail(
+                                    "ambiguous_method_names",
+                                    f"unresolved ambiguous method call: {node.func.attr} at line {getattr(node, 'lineno', '?')}",
+                                )
                             return node
                         arg_fallback = self.method_arg_fallback.get(node.func.attr)
                         ret_fallback = self.method_ret_fallback.get(node.func.attr)
                         if arg_fallback is None and ret_fallback is None:
+                            if self.strict_limitations:
+                                strict_fail(
+                                    "strategy_resolution",
+                                    f"unresolved call target without fallback: {node.func.attr} at line {getattr(node, 'lineno', '?')}",
+                                )
                             return node
                         info = {
                             "typed_pos": arg_fallback["typed_pos"] if arg_fallback is not None else {},
@@ -1052,6 +1209,7 @@ class CinderDetyperBoxUnbox:
             method_arg_fallback,
             class_field_annotations,
             self.ambiguous_method_names,
+            self.strict_limitations,
         ).visit(tree)
         if any(guide[TOP_LEVEL][pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_BODY]):
             detype_top_level_body(tree)
@@ -1091,6 +1249,8 @@ class CinderDetyperBoxUnbox:
             antr_name, fun_name = q_fun_name
             is_ambiguous_method = antr_name is not None and fun_name in self.ambiguous_method_names
             if is_ambiguous_method:
+                if plan_enabled[q_fun_name]:
+                    self._strict_fail("ambiguous_method_names", f"plan selected ambiguous method: {q_fun_name}")
                 guide[q_fun_name] = dict(disabled_pass_state)
             else:
                 guide[q_fun_name] = dict(enabled_pass_state if plan_enabled[q_fun_name] else disabled_pass_state)
@@ -1379,6 +1539,11 @@ def main():
     parser.add_argument("--show-perm", type=str, default=None, help="hex permutation id to print transformed source")
     parser.add_argument("--test", action="store_true", help="run typed and fully detyped once")
     parser.add_argument("--signals", action="store_true", help="run deterministic pass-only signal report")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="assert when transform limitations are encountered instead of silently skipping",
+    )
     args = parser.parse_args()
 
     benchmark_path = resolve_benchmark_path(args.benchmark, args.level, args.root)
@@ -1390,12 +1555,14 @@ def main():
         python=args.python,
         scratch_dir=args.scratch,
         params=tuple(args.param),
+        strict_limitations=args.strict,
     )
 
     print(f"benchmark: {benchmark_path}")
     print(f"functions: {detyper.fun_count()}")
     print(f"passes: {PASS_COUNT} ({', '.join(PASS_NAMES)})")
     print(f"plan bits: {detyper.plan_bit_count()}")
+    print(f"strict: {args.strict}")
 
     if args.show_perm is not None:
         perm = detyper._perm_from_name(args.show_perm)

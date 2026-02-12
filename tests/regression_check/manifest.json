@@ -2,128 +2,242 @@
   {
     "name": "param_box_primitive",
     "file": "cases/param_box_primitive.py",
-    "enabled_passes": ["param_box_primitive"],
-    "plan": ["add_one"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "param_box_primitive"
+    ],
+    "plan": [
+      "add_one"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "param_box_primitive_ambiguous_method_receiver",
     "file": "cases/param_box_primitive_ambiguous_method_receiver.py",
-    "enabled_passes": ["param_box_primitive"],
-    "plan": ["Board.move"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "param_box_primitive"
+    ],
+    "plan": [
+      "Board.move"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "param_construct_container",
     "file": "cases/param_construct_container.py",
-    "enabled_passes": ["param_construct_container"],
-    "plan": ["first"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "param_construct_container"
+    ],
+    "plan": [
+      "first"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "param_cast_all",
     "file": "cases/param_cast_all.py",
-    "enabled_passes": ["param_cast_all"],
-    "plan": ["echo"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "param_cast_all"
+    ],
+    "plan": [
+      "echo"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "param_cast_container_passthrough",
     "file": "cases/param_cast_container_passthrough.py",
-    "enabled_passes": ["param_cast_container_passthrough"],
-    "plan": ["first"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "param_cast_container_passthrough"
+    ],
+    "plan": [
+      "first"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "body_box_primitive",
     "file": "cases/body_box_primitive.py",
-    "enabled_passes": ["body_box_primitive"],
-    "plan": ["bump"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_box_primitive"
+    ],
+    "plan": [
+      "bump"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "body_construct_container",
     "file": "cases/body_construct_container.py",
-    "enabled_passes": ["body_construct_container"],
-    "plan": ["first_value"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_construct_container"
+    ],
+    "plan": [
+      "first_value"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "body_cast_all",
     "file": "cases/body_cast_all.py",
-    "enabled_passes": ["body_cast_all"],
-    "plan": ["run"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_cast_all"
+    ],
+    "plan": [
+      "run"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "return_box_primitive",
     "file": "cases/return_box_primitive.py",
-    "enabled_passes": ["return_box_primitive"],
-    "plan": ["inc"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "return_box_primitive"
+    ],
+    "plan": [
+      "inc"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "return_construct_container",
     "file": "cases/return_construct_container.py",
-    "enabled_passes": ["return_construct_container"],
-    "plan": ["make_items"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "return_construct_container"
+    ],
+    "plan": [
+      "make_items"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "return_cast_all",
     "file": "cases/return_cast_all.py",
-    "enabled_passes": ["return_cast_all"],
-    "plan": ["make_foo"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "return_cast_all"
+    ],
+    "plan": [
+      "make_foo"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "inline_cleanup",
     "file": "cases/inline_cleanup.py",
-    "enabled_passes": ["param_cast_all"],
-    "plan": ["project"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "param_cast_all"
+    ],
+    "plan": [
+      "project"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "wrapper_cleanup",
     "file": "cases/wrapper_cleanup.py",
     "enabled_passes": [],
-    "plan": ["demo"],
-    "expect": "typecheck_ok"
+    "plan": [
+      "demo"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "skip_self_properties",
     "file": "cases/skip_self_properties.py",
-    "enabled_passes": ["body_box_primitive"],
-    "plan": ["Counter.__init__", "Counter.set_value", "Counter.get_value"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_box_primitive"
+    ],
+    "plan": [
+      "Counter.__init__",
+      "Counter.set_value",
+      "Counter.get_value"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "limitation"
   },
   {
     "name": "top_level_forced_typed",
     "file": "cases/top_level_forced_typed.py",
-    "enabled_passes": ["body_box_primitive"],
-    "plan": ["__TOP_LEVEL__"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_box_primitive"
+    ],
+    "plan": [
+      "__TOP_LEVEL__"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "limitation"
   },
   {
     "name": "body_cast_optional_skip",
     "file": "cases/body_cast_optional_skip.py",
-    "enabled_passes": ["body_cast_all"],
-    "plan": ["hop"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_cast_all"
+    ],
+    "plan": [
+      "hop"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "limitation"
   },
   {
     "name": "body_reproject_decl_only_box_primitive",
     "file": "cases/body_reproject_decl_only_box_primitive.py",
-    "enabled_passes": ["body_box_primitive"],
-    "plan": ["inc_first"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_box_primitive"
+    ],
+    "plan": [
+      "inc_first"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "limitation"
+  },
+  {
+    "name": "body_decl_only_delete_invalid",
+    "file": "cases/body_decl_only_delete_invalid.py",
+    "enabled_passes": [
+      "body_box_primitive"
+    ],
+    "plan": [
+      "read_decl_only"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "limitation"
+  },
+  {
+    "name": "body_decl_only_delete_invalid_cast",
+    "file": "cases/body_decl_only_delete_invalid_cast.py",
+    "enabled_passes": [
+      "body_cast_all"
+    ],
+    "plan": [
+      "read_decl_only_cast"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "limitation"
   },
   {
     "name": "body_reproject_decl_only_construct_container",
     "file": "cases/body_reproject_decl_only_construct_container.py",
-    "enabled_passes": ["body_construct_container"],
-    "plan": ["first_row_value"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_construct_container"
+    ],
+    "plan": [
+      "first_row_value"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "body_return_construct_array_index_leak",
@@ -134,30 +248,74 @@
       "body_cast_container_passthrough",
       "return_cast_container_passthrough"
     ],
-    "plan": ["make_array", "read_first"],
-    "expect": "typecheck_ok"
+    "plan": [
+      "make_array",
+      "read_first"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "body_cast_decl_only_local_leak",
     "file": "cases/body_cast_decl_only_local_leak.py",
-    "enabled_passes": ["body_cast_all"],
-    "plan": ["leak"],
-    "expect": "typecheck_ok"
+    "enabled_passes": [
+      "body_cast_all"
+    ],
+    "plan": [
+      "leak"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
   },
   {
     "name": "unsupported_vararg_param",
     "file": "cases/unsupported_vararg_param.py",
-    "enabled_passes": ["param_box_primitive"],
-    "plan": ["total"],
+    "enabled_passes": [
+      "param_box_primitive"
+    ],
+    "plan": [
+      "total"
+    ],
     "expect": "transform_fail",
-    "error_contains": "detyping vararg annotation unsupported"
+    "error_contains": "detyping vararg annotation unsupported",
+    "signal_group": "limitation"
   },
   {
     "name": "unsupported_starred_call_boundary",
     "file": "cases/unsupported_starred_call_boundary.py",
-    "enabled_passes": ["param_box_primitive"],
-    "plan": ["callee"],
+    "enabled_passes": [
+      "param_box_primitive"
+    ],
+    "plan": [
+      "callee"
+    ],
     "expect": "transform_fail",
-    "error_contains": "starred positional args not supported for boundary rewrite"
+    "error_contains": "starred positional args not supported for boundary rewrite",
+    "signal_group": "limitation"
+  },
+  {
+    "name": "error_shape_cast_unknown_type_typing_list",
+    "file": "cases/error_shape_cast_unknown_type_typing_list.py",
+    "enabled_passes": [
+      "return_cast_all"
+    ],
+    "plan": [
+      "evolve"
+    ],
+    "expect": "typecheck_ok",
+    "signal_group": "core"
+  },
+  {
+    "name": "error_shape_cast_unknown_type_imported_class",
+    "file": "cases/error_shape_cast_unknown_type_imported_class.py",
+    "enabled_passes": [
+      "return_cast_all"
+    ],
+    "plan": [
+      "evolve"
+    ],
+    "expect": "typecheck_fail",
+    "error_contains": "cast to unknown type",
+    "signal_group": "limitation"
   }
 ]
