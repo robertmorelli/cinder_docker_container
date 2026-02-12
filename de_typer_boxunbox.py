@@ -127,7 +127,6 @@ container_passthrough_type_order = (
 )
 container_construct_types = frozenset(container_construct_type_order)
 container_passthrough_types = frozenset(container_passthrough_type_order)
-construct_container_types = container_construct_types.union(container_passthrough_types)
 
 CAST_FALLBACK_BIN = "other"
 
@@ -151,12 +150,17 @@ def _sanitize_pass_token(name: str) -> str:
 BOX_LOGIC_BIN = "primitive"
 CONSTRUCT_LOGIC_BIN = "container"
 CAST_LOGIC_BIN = "all"
-construct_bin_by_root = dict((root_name, CONSTRUCT_LOGIC_BIN) for root_name in construct_container_types)
+CAST_CONTAINER_PASSTHROUGH_LOGIC_BIN = "container_passthrough"
+construct_bin_by_root = dict((root_name, CONSTRUCT_LOGIC_BIN) for root_name in container_construct_types)
+cast_container_passthrough_bin_by_root = dict(
+    (root_name, CAST_CONTAINER_PASSTHROUGH_LOGIC_BIN) for root_name in container_passthrough_types
+)
 
 TYPE_BIN_SPECS: tuple[tuple[str, str], ...] = (
     ("box", BOX_LOGIC_BIN),
     ("construct", CONSTRUCT_LOGIC_BIN),
     ("cast", CAST_LOGIC_BIN),
+    ("cast", CAST_CONTAINER_PASSTHROUGH_LOGIC_BIN),
 )
 
 PASS_SPECS: tuple[tuple[str, str, str, str], ...] = tuple(
@@ -415,7 +419,7 @@ class CinderDetyperBoxUnbox:
             return (
                 isinstance(annotation, Subscript)
                 and isinstance(annotation.value, Name)
-                and annotation.value.id in construct_container_types
+                and annotation.value.id in container_construct_types
             )
 
         def is_passthrough_container_annotation(annotation: expr | None) -> bool:
@@ -463,6 +467,14 @@ class CinderDetyperBoxUnbox:
                 root_name = annotation.value.id
                 assert root_name in construct_bin_by_root, f"unknown constructor annotation root: {root_name}"
                 return ("construct", construct_bin_by_root[root_name])
+            if is_passthrough_container_annotation(annotation):
+                assert isinstance(annotation, Subscript), "passthrough container annotation must be subscript"
+                assert isinstance(annotation.value, Name), "passthrough container annotation base must be name"
+                root_name = annotation.value.id
+                assert (
+                    root_name in cast_container_passthrough_bin_by_root
+                ), f"unknown passthrough container annotation root: {root_name}"
+                return ("cast", cast_container_passthrough_bin_by_root[root_name])
             return ("cast", CAST_LOGIC_BIN)
 
         def annotation_policy(annotation: expr | None) -> str:
@@ -516,8 +528,9 @@ class CinderDetyperBoxUnbox:
             if policy == "box":
                 return coerce_primitive(annotation, source)
             if policy == "construct":
-                if is_passthrough_container_annotation(annotation):
-                    return source
+                assert not is_passthrough_container_annotation(
+                    annotation
+                ), "passthrough containers must use cast passthrough pass"
                 return wrap_construct(annotation, source)
             if policy == "passthrough":
                 return source
@@ -530,8 +543,9 @@ class CinderDetyperBoxUnbox:
             if policy == "box":
                 return wrap_box(coerce_primitive(annotation, value))
             if policy == "construct":
-                if is_passthrough_container_annotation(annotation):
-                    return value
+                assert not is_passthrough_container_annotation(
+                    annotation
+                ), "passthrough containers must use cast passthrough pass"
                 return wrap_construct(annotation, value)
             if policy == "passthrough":
                 return value
@@ -847,8 +861,9 @@ class CinderDetyperBoxUnbox:
                         return coerced
                     return wrap_box(coerced)
                 if policy == "construct":
-                    if is_passthrough_container_annotation(annotation):
-                        return node
+                    assert not is_passthrough_container_annotation(
+                        annotation
+                    ), "passthrough containers must use cast passthrough pass"
                     return wrap_construct(annotation, node)
                 if policy == "cast":
                     return wrap_cast_or_construct(annotation, node)
@@ -859,8 +874,9 @@ class CinderDetyperBoxUnbox:
                 if policy == "box":
                     return coerce_primitive(annotation, node)
                 if policy == "construct":
-                    if is_passthrough_container_annotation(annotation):
-                        return node
+                    assert not is_passthrough_container_annotation(
+                        annotation
+                    ), "passthrough containers must use cast passthrough pass"
                     return wrap_construct(annotation, node)
                 if policy == "cast":
                     return wrap_cast_or_construct(annotation, node)
@@ -874,8 +890,9 @@ class CinderDetyperBoxUnbox:
                         return coerced
                     return wrap_box(coerced)
                 if policy == "construct":
-                    if is_passthrough_container_annotation(annotation):
-                        return node
+                    assert not is_passthrough_container_annotation(
+                        annotation
+                    ), "passthrough containers must use cast passthrough pass"
                     return wrap_construct(annotation, node)
                 if policy == "cast":
                     return wrap_cast_or_construct(annotation, node)
@@ -886,8 +903,9 @@ class CinderDetyperBoxUnbox:
                 if policy == "box":
                     return coerce_primitive(annotation, node)
                 if policy == "construct":
-                    if is_passthrough_container_annotation(annotation):
-                        return node
+                    assert not is_passthrough_container_annotation(
+                        annotation
+                    ), "passthrough containers must use cast passthrough pass"
                     return wrap_construct(annotation, node)
                 if policy == "cast":
                     return wrap_cast_or_construct(annotation, node)
@@ -951,7 +969,7 @@ class CinderDetyperBoxUnbox:
 
                 if value is None:
                     return node
-                if isinstance(node.target, Name) and node.value is not None:
+                if isinstance(node.target, Name):
                     self.local_reproject_annotations[node.target.id] = deepcopy(annotation)
                 return Assign(targets=[node.target], value=value, type_comment=None)
 
@@ -1067,8 +1085,9 @@ class CinderDetyperBoxUnbox:
                         return wrap_box(node)
                     return wrap_box(coerce_primitive(annotation, node))
                 if policy == "construct":
-                    if is_passthrough_container_annotation(annotation):
-                        return node
+                    assert not is_passthrough_container_annotation(
+                        annotation
+                    ), "passthrough containers must use cast passthrough pass"
                     return wrap_construct(annotation, node)
                 if policy == "cast":
                     return wrap_cast_or_construct(annotation, node)
@@ -1079,8 +1098,9 @@ class CinderDetyperBoxUnbox:
                 if policy == "box":
                     return coerce_primitive(annotation, node)
                 if policy == "construct":
-                    if is_passthrough_container_annotation(annotation):
-                        return node
+                    assert not is_passthrough_container_annotation(
+                        annotation
+                    ), "passthrough containers must use cast passthrough pass"
                     return wrap_construct(annotation, node)
                 if policy == "cast":
                     return wrap_cast_or_construct(annotation, node)

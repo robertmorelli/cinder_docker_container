@@ -11,13 +11,16 @@ Each transform is shown vertically:
 
 - [body box primitive](#body-box-primitive)
 - [body cast all](#body-cast-all)
+- [body cast container passthrough](#body-cast-container-passthrough)
 - [body construct container](#body-construct-container)
 - [inline cleanup](#inline-cleanup)
 - [param box primitive](#param-box-primitive)
 - [param cast all](#param-cast-all)
+- [param cast container passthrough](#param-cast-container-passthrough)
 - [param construct container](#param-construct-container)
 - [return box primitive](#return-box-primitive)
 - [return cast all](#return-cast-all)
+- [return cast container passthrough](#return-cast-container-passthrough)
 - [return construct container](#return-construct-container)
 - [wrapper cleanup](#wrapper-cleanup)
 
@@ -69,6 +72,22 @@ def make_widget() -> Widget:
 def run() -> None:
     w = cast(Widget, make_widget())
     cast(Widget, w).tick()
+```
+
+## body cast container passthrough
+
+From:
+```python
+def first_value(xs: Array[int64]) -> int64:
+    arr: Array[int64] = xs
+    return arr[int64(0)]
+```
+
+To:
+```python
+def first_value(xs: Array[int64]) -> int64:
+    arr = cast(Array[int64], xs)
+    return cast(Array[int64], arr)[int64(0)]
 ```
 
 ## body construct container
@@ -162,6 +181,31 @@ def use(x: Foo) -> Foo:
     return out
 ```
 
+## param cast container passthrough
+
+From:
+```python
+def first(xs: Array[int64]) -> int64:
+    return xs[int64(0)]
+
+
+def use(src: Array[int64]) -> int64:
+    out: int64 = first(src)
+    return out
+```
+
+To:
+```python
+def first(_xs) -> int64:
+    xs: Array[int64] = cast(Array[int64], _xs)
+    return xs[int64(0)]
+
+
+def use(src: Array[int64]) -> int64:
+    out: int64 = first(cast(Array[int64], src))
+    return out
+```
+
 ## param construct container
 
 From:
@@ -241,6 +285,30 @@ def make_foo():
 def use() -> Foo:
     out: Foo = cast(Foo, make_foo())
     return out
+```
+
+## return cast container passthrough
+
+From:
+```python
+def make_items(xs: Array[int64]) -> Array[int64]:
+    return xs
+
+
+def use(v: Array[int64]) -> int64:
+    out: Array[int64] = make_items(v)
+    return out[int64(0)]
+```
+
+To:
+```python
+def make_items(xs: Array[int64]):
+    return xs
+
+
+def use(v: Array[int64]) -> int64:
+    out: Array[int64] = cast(Array[int64], make_items(v))
+    return out[int64(0)]
 ```
 
 ## return construct container
