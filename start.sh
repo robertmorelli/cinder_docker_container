@@ -22,6 +22,8 @@ docker run \
   -v "$SCRIPT_DIR/de_typer.py:/cinder/Tools/benchmarks/de_typer.py:ro" \
   -v "$SCRIPT_DIR/de_type2.py:/cinder/Tools/benchmarks/de_type2.py:ro" \
   -v "$SCRIPT_DIR/de_typer_boxunbox.py:/cinder/Tools/benchmarks/de_typer_boxunbox.py:ro" \
+  -v "$SCRIPT_DIR/passes:/cinder/Tools/benchmarks/passes:ro" \
+  -v "$SCRIPT_DIR/metadata:/cinder/Tools/benchmarks/metadata:ro" \
   -v "$SCRIPT_DIR/tests:/root/tests:ro" \
   -v "$SCRIPT_DIR/docker_bash_profile:/root/.bash_profile:ro" \
   -v "$SCRIPT_DIR/static-python-perf:/root/static-python-perf:ro" \

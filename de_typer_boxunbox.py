@@ -27,7 +27,7 @@ from ast import (
     BinOp,
     BitOr,
 )
-from functools import cache, reduce
+from functools import cache
 from itertools import chain
 from random import sample
 from subprocess import run, CompletedProcess
@@ -43,6 +43,39 @@ from copy import deepcopy
 from hashlib import sha1
 from typing import Tuple as TypingTuple
 from argparse import ArgumentParser
+from metadata.detype_metadata import DetypeMetadata
+from passes import PARAM_PASS_APPLIERS, BODY_PASS_APPLIERS, RETURN_PASS_APPLIERS
+from passes.context import PassContext
+from passes.cleanup_inline import cleanup_inline_function
+from passes.cleanup_wrappers import RedundantWrapperCleaner
+from passes.decider import (
+    decide_body_strategy,
+    decide_param_strategy,
+    decide_return_strategy,
+    annotation_policy,
+    pass_name_for_annotation,
+    is_optional_or_union_annotation,
+    is_passthrough_container_annotation,
+    is_primitive_annotation,
+    is_dynamic_annotation,
+    is_none_annotation,
+    is_constructor_annotation,
+)
+from passes.bins import (
+    box_primitive_type_order,
+    box_primitive_types,
+    explicit_cast_type_order,
+    scalar_construct_type_order,
+    scalar_construct_types,
+    container_construct_type_order,
+    container_passthrough_type_order,
+    container_construct_types,
+    container_passthrough_types,
+    BOX_LOGIC_BIN,
+    CONSTRUCT_LOGIC_BIN,
+    CAST_LOGIC_BIN,
+    CAST_CONTAINER_PASSTHROUGH_LOGIC_BIN,
+)
 
 try:
     import black
@@ -58,10 +91,8 @@ def split_lines(src: str) -> str:
 
 Permutation = TypingTuple[bool, ...]
 GuideKey = tuple[str | None, str | None]
-PlanKey = GuideKey
 PassState = dict[str, bool]
 GuideType = dict[GuideKey, PassState]
-QNameType = set[GuideKey]
 
 PASS_SCOPE_PARAM = "param"
 PASS_SCOPE_BODY = "body"
@@ -73,63 +104,9 @@ TRANSFORM_LIMITATIONS = (
     "class_members: body detyping never rewrites self.<field> declarations, reads, or writes",
     "top_level: module AnnAssign body detyping is always forced typed (plan keeps TOP_LEVEL bit)",
     "body_cast_all: Optional[...] and union annotations are skipped (flow narrowing unsupported)",
+    "nogo_types: Iterator/Iterable/Generator/Async*/Coroutine/Protocol/Callable annotations are never detyped",
+    "ambiguous_method_names: unresolved attribute calls are not boundary-rewritten when a method name appears in multiple unrelated class hierarchies",
 )
-
-box_primitive_type_order = (
-    "int8",
-    "int16",
-    "int32",
-    "int64",
-    "uint8",
-    "uint16",
-    "uint32",
-    "uint64",
-    "double",
-    "single",
-    "char",
-    "cbool",
-)
-box_primitive_types = frozenset(box_primitive_type_order)
-
-explicit_cast_type_order = (
-)
-explicit_cast_types = frozenset(explicit_cast_type_order)
-
-scalar_construct_type_order = (
-    "float",
-)
-scalar_construct_types = frozenset(scalar_construct_type_order)
-
-nogo_types = frozenset(
-    (
-        "Iterator",
-        "Iterable",
-        "Generator",
-        "AsyncIterator",
-        "AsyncGenerator",
-        "Coroutine",
-        "Protocol",
-        "Callable",
-    )
-)
-
-container_construct_type_order = (
-    "CheckedList",
-    "CheckedDict",
-    "CheckedSet",
-)
-container_passthrough_type_order = (
-    "Array",
-    "Dict",
-    "List",
-    "Set",
-    "Tuple",
-)
-container_construct_types = frozenset(container_construct_type_order)
-container_passthrough_types = frozenset(container_passthrough_type_order)
-
-CAST_FALLBACK_BIN = "other"
-
 
 def _sanitize_pass_token(name: str) -> str:
     out = []
@@ -146,15 +123,6 @@ def _sanitize_pass_token(name: str) -> str:
     assert token != "", f"invalid pass token: {name!r}"
     return token
 
-
-BOX_LOGIC_BIN = "primitive"
-CONSTRUCT_LOGIC_BIN = "container"
-CAST_LOGIC_BIN = "all"
-CAST_CONTAINER_PASSTHROUGH_LOGIC_BIN = "container_passthrough"
-construct_bin_by_root = dict((root_name, CONSTRUCT_LOGIC_BIN) for root_name in container_construct_types)
-cast_container_passthrough_bin_by_root = dict(
-    (root_name, CAST_CONTAINER_PASSTHROUGH_LOGIC_BIN) for root_name in container_passthrough_types
-)
 
 TYPE_BIN_SPECS: tuple[tuple[str, str], ...] = (
     ("box", BOX_LOGIC_BIN),
@@ -243,9 +211,12 @@ class CinderDetyperBoxUnbox:
         self.benchmark_dir = path.dirname(path.abspath(benchmark_file_name))
 
         t2 = Timer("enumerate")
-        self.class_antrs, self.fun_names = self._enumerate_funs()
-        self.plan_names = self._enumerate_plan_names()
-        assert len(self.plan_names) == len(self.fun_names), "plan name enumeration mismatch"
+        self.metadata = DetypeMetadata.build(self._read_ast(), TOP_LEVEL)
+        self.class_antrs = self.metadata.class_antrs
+        self.fun_names = self.metadata.fun_names
+        self.ambiguous_method_names = self.metadata.ambiguous_method_names
+        self.plan_names = self.metadata.plan_names
+        assert len(self.plan_names) <= len(self.fun_names), "plan name enumeration mismatch"
         t2.end()
         t1.end()
 
@@ -258,10 +229,6 @@ class CinderDetyperBoxUnbox:
     def plan_bit_count(self):
         return len(self.plan_names)
 
-    def _enumerate_plan_names(self) -> tuple[PlanKey, ...]:
-        # keep de_typer-style function-level planning: one bit per qualified function
-        return self.fun_names
-
     @staticmethod
     @cache
     def read_text(file_name):
@@ -272,66 +239,6 @@ class CinderDetyperBoxUnbox:
     @cache
     def _read_ast(self):
         return parse(CinderDetyperBoxUnbox.read_text(self.benchmark_file_name), type_comments=True)
-
-    def _enumerate_funs(self):
-        ordered_q_names = [TOP_LEVEL]
-        q_fun_names_set: QNameType = {TOP_LEVEL}
-
-        antr_graph: dict[None | str, frozenset[str]] = {None: frozenset()}
-
-        def antr_classes(anter_exprs: list[expr]) -> frozenset[str]:
-            assert all(isinstance(a, Name) for a in anter_exprs), "only simple inheritance supported"
-            antr_names: tuple[str, ...] = tuple(a.id for a in anter_exprs if a.id in antr_graph)
-            anter_set: frozenset[str] = frozenset(antr_names)
-            antr_name_sets: tuple[frozenset[str], ...] = tuple(
-                frozenset(antr_graph[antr_name]) for antr_name in antr_names
-            )
-            return reduce(lambda a, b: a.union(b), antr_name_sets, anter_set)
-
-        def update_antr_graph(class_node: ClassDef):
-            class_name = class_node.name
-            assert class_name not in antr_graph, "class name shadowing not supported"
-            antr_graph[class_name] = frozenset(antr_classes(class_node.bases))
-
-        def antr_fun_gen(fun_name: str, antr_name: str | None = None):
-            assert antr_name in antr_graph, f"function processed before class ancestors: {antr_name} {fun_name}"
-            anters = antr_graph[antr_name]
-            return tuple((anter, fun_name) for anter in anters)
-
-        def fun_exists(antr_name: str | None, fun_name: str):
-            return (antr_name, fun_name) in q_fun_names_set
-
-        def is_fun_overload(fun_name: str, antr_name: str | None = None):
-            assert not fun_exists(antr_name, fun_name), "function name shadowing not supported"
-            return not any(fun_exists(*q_name) for q_name in antr_fun_gen(fun_name, antr_name=antr_name))
-
-        def count_gen(node: AST, antr_name: str | None = None, fun_name: str | None = None):
-            inside_fun = fun_name is not None
-            inside_class = antr_name is not None
-            for child_node in iter_child_nodes(node):
-                is_fun = isinstance(child_node, FunctionDef)
-                is_class = isinstance(child_node, ClassDef)
-                assert not (is_fun and inside_fun), "function inside function not supported"
-                assert not (is_class and inside_fun), "class inside function not supported"
-                assert not (is_class and inside_class), "class inside class not supported"
-                if is_fun:
-                    if is_fun_overload(child_node.name, antr_name):
-                        key = (antr_name, child_node.name)
-                        q_fun_names_set.add(key)
-                        ordered_q_names.append(key)
-                        yield 1
-                    else:
-                        yield 0
-                    yield from count_gen(child_node, antr_name=antr_name, fun_name=child_node.name)
-                elif is_class:
-                    update_antr_graph(child_node)
-                    yield from count_gen(child_node, antr_name=child_node.name, fun_name=fun_name)
-                else:
-                    yield 0
-
-        fun_count = sum(count_gen(self._read_ast())) + 1
-        assert fun_count == len(ordered_q_names), "function counting failure"
-        return antr_graph, tuple(ordered_q_names)
 
     def _detype_funs(self, tree: AST, guide: GuideType) -> str:
         @cache
@@ -360,21 +267,6 @@ class CinderDetyperBoxUnbox:
         def fun_has_any_pass_enabled(fun_name: str, antr_name: str | None = None):
             pass_state = get_fun_pass_state(fun_name, antr_name=antr_name)
             return any(pass_state[pass_name] for pass_name in PASS_NAMES)
-
-        def is_none_annotation(annotation: expr | None) -> bool:
-            if annotation is None:
-                return True
-            if isinstance(annotation, Constant):
-                return annotation.value is None
-            if isinstance(annotation, Name):
-                return annotation.id == "None"
-            return False
-
-        def is_primitive_annotation(annotation: expr | None) -> bool:
-            return isinstance(annotation, Name) and annotation.id in box_primitive_types
-
-        def is_dynamic_annotation(annotation: expr | None) -> bool:
-            return isinstance(annotation, Name) and annotation.id == "dynamic"
 
         def is_box_call(node: expr) -> bool:
             return isinstance(node, Call) and isinstance(node.func, Name) and node.func.id == "box"
@@ -415,81 +307,6 @@ class CinderDetyperBoxUnbox:
                 return wrap_scalar_construct(annotation, node)
             return wrap_cast(annotation, node)
 
-        def is_constructor_annotation(annotation: expr | None) -> bool:
-            return (
-                isinstance(annotation, Subscript)
-                and isinstance(annotation.value, Name)
-                and annotation.value.id in container_construct_types
-            )
-
-        def is_passthrough_container_annotation(annotation: expr | None) -> bool:
-            return (
-                isinstance(annotation, Subscript)
-                and isinstance(annotation.value, Name)
-                and annotation.value.id in container_passthrough_types
-            )
-
-        def annotation_root_name(annotation: expr | None) -> str | None:
-            if annotation is None:
-                return None
-            if isinstance(annotation, Name):
-                return annotation.id
-            if isinstance(annotation, Subscript):
-                return annotation_root_name(annotation.value)
-            if isinstance(annotation, Attribute):
-                return annotation.attr
-            return None
-
-        def is_optional_or_union_annotation(annotation: expr | None) -> bool:
-            if annotation is None:
-                return False
-            root_name = annotation_root_name(annotation)
-            if root_name in ("Optional", "Union"):
-                return True
-            if isinstance(annotation, BinOp) and isinstance(annotation.op, BitOr):
-                return True
-            return False
-
-        def annotation_detype_info(annotation: expr | None) -> tuple[str, str | None]:
-            if annotation is None or is_none_annotation(annotation) or is_dynamic_annotation(annotation):
-                return ("passthrough", None)
-            root_name = annotation_root_name(annotation)
-            if root_name in nogo_types:
-                return ("passthrough", None)
-            if isinstance(annotation, Name) and annotation.id in explicit_cast_types:
-                return ("cast", CAST_LOGIC_BIN)
-            if is_primitive_annotation(annotation):
-                assert isinstance(annotation, Name), "primitive annotations must be simple names"
-                return ("box", BOX_LOGIC_BIN)
-            if is_constructor_annotation(annotation):
-                assert isinstance(annotation, Subscript), "constructor annotation must be subscript"
-                assert isinstance(annotation.value, Name), "constructor annotation base must be name"
-                root_name = annotation.value.id
-                assert root_name in construct_bin_by_root, f"unknown constructor annotation root: {root_name}"
-                return ("construct", construct_bin_by_root[root_name])
-            if is_passthrough_container_annotation(annotation):
-                assert isinstance(annotation, Subscript), "passthrough container annotation must be subscript"
-                assert isinstance(annotation.value, Name), "passthrough container annotation base must be name"
-                root_name = annotation.value.id
-                assert (
-                    root_name in cast_container_passthrough_bin_by_root
-                ), f"unknown passthrough container annotation root: {root_name}"
-                return ("cast", cast_container_passthrough_bin_by_root[root_name])
-            return ("cast", CAST_LOGIC_BIN)
-
-        def annotation_policy(annotation: expr | None) -> str:
-            policy, _ = annotation_detype_info(annotation)
-            return policy
-
-        def pass_name_for_annotation(scope_name: str, annotation: expr | None) -> str | None:
-            policy, bin_name = annotation_detype_info(annotation)
-            if policy == "passthrough":
-                return None
-            assert bin_name is not None, f"missing type bin for non-passthrough annotation: {annotation!r}"
-            key = (scope_name, policy, bin_name)
-            assert key in PASS_NAME_LOOKUP, f"pass mapping missing for {key}"
-            return PASS_NAME_LOOKUP[key]
-
         def wrap_construct(annotation: expr, node: expr):
             assert is_constructor_annotation(annotation), f"expected constructor annotation, got: {annotation}"
             return Call(
@@ -506,50 +323,6 @@ class CinderDetyperBoxUnbox:
                 args=[node],
                 keywords=[],
             )
-
-        def fresh_hidden_name(name: str, used: set[str]) -> str:
-            new_name = f"_{name}"
-            while new_name in used:
-                new_name = f"_{new_name}"
-            used.add(new_name)
-            return new_name
-
-        def is_inline_function(fn: FunctionDef) -> bool:
-            for decorator in fn.decorator_list:
-                if isinstance(decorator, Name) and decorator.id == "inline":
-                    return True
-                if isinstance(decorator, Attribute) and decorator.attr == "inline":
-                    return True
-            return False
-
-        def make_inbound_conversion(annotation: expr, source_name: str):
-            source = Name(id=source_name, ctx=Load())
-            policy = annotation_policy(annotation)
-            if policy == "box":
-                return coerce_primitive(annotation, source)
-            if policy == "construct":
-                assert not is_passthrough_container_annotation(
-                    annotation
-                ), "passthrough containers must use cast passthrough pass"
-                return wrap_construct(annotation, source)
-            if policy == "passthrough":
-                return source
-            return wrap_cast_or_construct(annotation, source)
-
-        def detype_annassign_value(annotation: expr, value: expr | None):
-            if value is None:
-                return Constant(value=None)
-            policy = annotation_policy(annotation)
-            if policy == "box":
-                return wrap_box(coerce_primitive(annotation, value))
-            if policy == "construct":
-                assert not is_passthrough_container_annotation(
-                    annotation
-                ), "passthrough containers must use cast passthrough pass"
-                return wrap_construct(annotation, value)
-            if policy == "passthrough":
-                return value
-            return wrap_cast_or_construct(annotation, value)
 
         def ensure_static_imports(module: AST, names: set[str]):
             if len(names) == 0:
@@ -576,88 +349,36 @@ class CinderDetyperBoxUnbox:
                 ),
             )
 
-        def _detype_params_for_policy(
-            fn: FunctionDef,
-            used_names: set[str],
-            conversion_stmts: list[AnnAssign],
-            pass_state: PassState,
-            expected_policy: str,
-        ):
-            changed = False
-            for a in chain(fn.args.posonlyargs, fn.args.args, fn.args.kwonlyargs):
-                annotation = a.annotation
-                if annotation is None:
-                    continue
-                if a.arg in ("self", "cls"):
-                    continue
-                policy = annotation_policy(annotation)
-                if policy != expected_policy:
-                    continue
-                pass_name = pass_name_for_annotation(PASS_SCOPE_PARAM, annotation)
-                assert pass_name is not None, f"missing param pass for annotation: {annotation!r}"
-                if not pass_state[pass_name]:
-                    continue
-
-                old_name = a.arg
-                hidden_name = fresh_hidden_name(old_name, used_names)
-                a.arg = hidden_name
-                annotation_copy = deepcopy(annotation)
-                conversion_stmts.append(
-                    AnnAssign(
-                        target=Name(id=old_name, ctx=Store()),
-                        annotation=annotation_copy,
-                        value=make_inbound_conversion(annotation_copy, hidden_name),
-                        simple=1,
-                    )
-                )
-                a.annotation = None
-                changed = True
-            return changed
+        pass_ctx = PassContext(
+            annotation_policy=annotation_policy,
+            pass_name_for_annotation=pass_name_for_annotation,
+            coerce_primitive=coerce_primitive,
+            wrap_construct=wrap_construct,
+            wrap_cast_or_construct=wrap_cast_or_construct,
+            wrap_box=wrap_box,
+            is_passthrough_container_annotation=is_passthrough_container_annotation,
+            is_optional_or_union_annotation=is_optional_or_union_annotation,
+        )
 
         def _detype_params(fn: FunctionDef, pass_state: PassState):
             used_names = set(a.arg for a in chain(fn.args.posonlyargs, fn.args.args, fn.args.kwonlyargs))
             conversion_stmts: list[AnnAssign] = []
             changed = False
-            changed = _detype_params_for_policy(fn, used_names, conversion_stmts, pass_state, "box") or changed
-            changed = _detype_params_for_policy(fn, used_names, conversion_stmts, pass_state, "construct") or changed
-            changed = _detype_params_for_policy(fn, used_names, conversion_stmts, pass_state, "cast") or changed
+            for pass_apply in PARAM_PASS_APPLIERS:
+                changed = pass_apply(fn, pass_state, used_names, conversion_stmts, pass_ctx) or changed
             return changed, conversion_stmts
 
-        def _detype_body_for_policy(annotation: expr, value: expr | None, pass_state: PassState, expected_policy: str):
-            policy = annotation_policy(annotation)
-            assert policy == expected_policy, f"{expected_policy} body detype policy mismatch"
-            if expected_policy == "cast" and is_optional_or_union_annotation(annotation):
-                return None
-            pass_name = pass_name_for_annotation(PASS_SCOPE_BODY, annotation)
-            assert pass_name is not None, f"missing body pass for annotation: {annotation!r}"
-            if not pass_state[pass_name]:
-                return None
-            return detype_annassign_value(annotation, value)
-
-        def _detype_body_primitive(annotation: expr, value: expr | None, pass_state: PassState):
-            return _detype_body_for_policy(annotation, value, pass_state, "box")
-
-        def _detype_body_construct(annotation: expr, value: expr | None, pass_state: PassState):
-            return _detype_body_for_policy(annotation, value, pass_state, "construct")
-
-        def _detype_body_cast(annotation: expr, value: expr | None, pass_state: PassState):
-            return _detype_body_for_policy(annotation, value, pass_state, "cast")
-
-        def _detype_return_for_policy(fn: FunctionDef, pass_state: PassState, expected_policy: str):
-            if annotation_policy(fn.returns) != expected_policy:
-                return False
-            pass_name = pass_name_for_annotation(PASS_SCOPE_RETURN, fn.returns)
-            assert pass_name is not None, f"missing return pass for annotation: {fn.returns!r}"
-            if not pass_state[pass_name]:
-                return False
-            fn.returns = None
-            return True
+        def _detype_body(annotation: expr, value: expr | None, pass_state: PassState):
+            for pass_apply in BODY_PASS_APPLIERS:
+                out = pass_apply(annotation, value, pass_state, pass_ctx)
+                if out is not None:
+                    return out
+            return None
 
         def _detype_return(fn: FunctionDef, pass_state: PassState):
             changed = False
-            changed = _detype_return_for_policy(fn, pass_state, "box") or changed
-            changed = _detype_return_for_policy(fn, pass_state, "construct") or changed
-            changed = _detype_return_for_policy(fn, pass_state, "cast") or changed
+            for pass_apply in RETURN_PASS_APPLIERS:
+                changed = pass_apply(fn, pass_state, pass_ctx) or changed
             return changed
 
         def pull_param_info(fn: FunctionDef, skip_implicit_first: bool, pass_state: PassState):
@@ -671,7 +392,7 @@ class CinderDetyperBoxUnbox:
                 if is_implicit:
                     continue
                 annotation = getattr(a, "annotation", None)
-                pass_name = pass_name_for_annotation(PASS_SCOPE_PARAM, annotation)
+                pass_name = decide_param_strategy(annotation).pass_name
                 if pass_name is not None and pass_state[pass_name]:
                     typed_pos[call_index] = deepcopy(annotation)
                 call_index += 1
@@ -682,11 +403,11 @@ class CinderDetyperBoxUnbox:
                 if is_implicit:
                     continue
                 annotation = getattr(a, "annotation", None)
-                pass_name = pass_name_for_annotation(PASS_SCOPE_PARAM, annotation)
+                pass_name = decide_param_strategy(annotation).pass_name
                 if pass_name is not None and pass_state[pass_name]:
                     typed_kw[a.arg] = deepcopy(annotation)
             ret_ann = None
-            ret_pass_name = pass_name_for_annotation(PASS_SCOPE_RETURN, fn.returns)
+            ret_pass_name = decide_return_strategy(fn.returns).pass_name
             if ret_pass_name is not None and pass_state[ret_pass_name]:
                 ret_ann = None if is_none_annotation(fn.returns) else deepcopy(fn.returns)
             return typed_pos, blocked_pos, typed_kw, blocked_kw, ret_ann
@@ -772,6 +493,69 @@ class CinderDetyperBoxUnbox:
                     out.pop(fun_name, None)
             return out
 
+        def consistent_method_param_annotations(table: dict[GuideKey, dict]):
+            methods: dict[str, list[dict]] = {}
+            for q_fun_name in self.fun_names:
+                antr_name, fun_name = q_fun_name
+                if antr_name is None:
+                    continue
+                methods.setdefault(fun_name, []).append(
+                    table.get(
+                        q_fun_name,
+                        {
+                            "typed_pos": {},
+                            "blocked_pos": set(),
+                            "typed_kw": {},
+                            "blocked_kw": set(),
+                        },
+                    )
+                )
+
+            out: dict[str, dict[str, dict]] = {}
+            for method_name, entries in methods.items():
+                pos_indexes: set[int] = set()
+                kw_names: set[str] = set()
+                for entry in entries:
+                    pos_indexes.update(entry["typed_pos"].keys())
+                    pos_indexes.update(entry["blocked_pos"])
+                    kw_names.update(entry["typed_kw"].keys())
+                    kw_names.update(entry["blocked_kw"])
+
+                typed_pos: dict[int, expr] = {}
+                for i in sorted(pos_indexes):
+                    if any(i in entry["blocked_pos"] for entry in entries):
+                        continue
+                    annotations = tuple(entry["typed_pos"].get(i) for entry in entries)
+                    if any(annotation is None for annotation in annotations):
+                        continue
+                    first = annotations[0]
+                    assert first is not None, "expected annotation for consistent positional fallback"
+                    if all(
+                        ast_dump(first, include_attributes=False) == ast_dump(annotation, include_attributes=False)
+                        for annotation in annotations[1:]
+                    ):
+                        typed_pos[i] = deepcopy(first)
+
+                typed_kw: dict[str, expr] = {}
+                for name in sorted(kw_names):
+                    if any(name in entry["blocked_kw"] for entry in entries):
+                        continue
+                    annotations = tuple(entry["typed_kw"].get(name) for entry in entries)
+                    if any(annotation is None for annotation in annotations):
+                        continue
+                    first = annotations[0]
+                    assert first is not None, "expected annotation for consistent keyword fallback"
+                    if all(
+                        ast_dump(first, include_attributes=False) == ast_dump(annotation, include_attributes=False)
+                        for annotation in annotations[1:]
+                    ):
+                        typed_kw[name] = deepcopy(first)
+
+                if len(typed_pos) > 0 or len(typed_kw) > 0:
+                    out[method_name] = {"typed_pos": typed_pos, "typed_kw": typed_kw}
+
+            return out
+
         def collect_class_field_annotations(module_node: AST):
             field_map: dict[str, dict[str, expr]] = {}
 
@@ -824,11 +608,12 @@ class CinderDetyperBoxUnbox:
                 self.in_init = function_name == "__init__"
                 self.field_annotations = field_annotations
                 self.body_variant_enabled = any(pass_state[pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_BODY])
-                return_pass_name = pass_name_for_annotation(PASS_SCOPE_RETURN, return_annotation)
+                return_decision = decide_return_strategy(return_annotation)
+                return_pass_name = return_decision.pass_name
                 self.box_returns = (
                     return_pass_name is not None
                     and pass_state[return_pass_name]
-                    and annotation_policy(return_annotation) == "box"
+                    and return_decision.strategy == "box"
                 )
                 self.local_reproject_annotations: dict[str, expr] = {}
                 self.skip_self_property_detype = True
@@ -850,7 +635,7 @@ class CinderDetyperBoxUnbox:
                 return deepcopy(annotation) if annotation is not None else None
 
             def _field_pass_enabled(self, annotation: expr | None):
-                pass_name = pass_name_for_annotation(PASS_SCOPE_BODY, annotation)
+                pass_name = decide_body_strategy(annotation).pass_name
                 return pass_name is not None and self.pass_state[pass_name]
 
             def _embed_field_write(self, node: expr, annotation: expr | None):
@@ -952,18 +737,15 @@ class CinderDetyperBoxUnbox:
                     return node
                 annotation = node.annotation
                 assert annotation is not None, "annassign without annotation unsupported"
-                policy = annotation_policy(annotation)
-                if policy == "passthrough":
+                decision = decide_body_strategy(annotation)
+                policy = decision.strategy
+                if policy in ("passthrough", "nogo"):
                     return node
                 if not self.body_variant_enabled:
                     return node
 
-                if policy == "box":
-                    value = _detype_body_primitive(annotation, node.value, self.pass_state)
-                elif policy == "construct":
-                    value = _detype_body_construct(annotation, node.value, self.pass_state)
-                elif policy == "cast":
-                    value = _detype_body_cast(annotation, node.value, self.pass_state)
+                if policy in ("box", "construct", "cast"):
+                    value = _detype_body(annotation, node.value, self.pass_state)
                 else:
                     assert False, f"unknown body detype policy: {policy}"
 
@@ -978,54 +760,6 @@ class CinderDetyperBoxUnbox:
                 if self.box_returns and node.value is not None and not is_box_call(node.value):
                     node.value = wrap_box(coerce_primitive(self.return_annotation, node.value))
                 return node
-
-        class InlineArgInliner(NodeTransformer):
-            def __init__(self, replacements: dict[str, expr]):
-                self.replacements = replacements
-
-            def visit_Name(self, node: Name):
-                if isinstance(node.ctx, Load) and node.id in self.replacements:
-                    return deepcopy(self.replacements[node.id])
-                return node
-
-            def visit_FunctionDef(self, node: FunctionDef):
-                return node
-
-            def visit_ClassDef(self, node: ClassDef):
-                return node
-
-        def cleanup_inline_function(fn: FunctionDef):
-            if not is_inline_function(fn):
-                return True
-            if len(fn.body) == 0:
-                return True
-
-            replacement_map = {}
-            body_index = 0
-            while body_index < len(fn.body):
-                stmt = fn.body[body_index]
-                if not isinstance(stmt, AnnAssign):
-                    break
-                if not isinstance(stmt.target, Name):
-                    break
-                if stmt.value is None:
-                    break
-                replacement_map[stmt.target.id] = deepcopy(stmt.value)
-                body_index += 1
-
-            if body_index == 0:
-                return len(fn.body) == 1 and isinstance(fn.body[0], Return)
-            if body_index >= len(fn.body):
-                return False
-            if not isinstance(fn.body[body_index], Return):
-                return False
-            if len(fn.body) != body_index + 1:
-                return False
-
-            inliner = InlineArgInliner(replacement_map)
-            cleaned_return = inliner.visit(fn.body[body_index])
-            fn.body = [cleaned_return]
-            return True
 
         def collect_primitive_name_annotations(fn: FunctionDef):
             out: dict[str, expr] = {}
@@ -1048,10 +782,21 @@ class CinderDetyperBoxUnbox:
             return out
 
         class BoundaryCallRetyper(NodeTransformer):
-            def __init__(self, call_info, class_names, method_ret_fallback):
+            def __init__(
+                self,
+                call_info,
+                class_names,
+                method_ret_fallback,
+                method_arg_fallback,
+                field_annotations,
+                ambiguous_method_names,
+            ):
                 self.call_info = call_info
                 self.class_names = class_names
                 self.method_ret_fallback = method_ret_fallback
+                self.method_arg_fallback = method_arg_fallback
+                self.field_annotations = field_annotations
+                self.ambiguous_method_names = ambiguous_method_names
                 self.class_stack: list[str] = []
                 self.primitive_name_stack: list[dict[str, expr]] = []
 
@@ -1116,17 +861,35 @@ class CinderDetyperBoxUnbox:
                     return False
                 return node.func.value.id in self.class_names
 
+            def _resolve_receiver_owner_name(self, receiver: expr):
+                if isinstance(receiver, Name):
+                    if receiver.id in self.class_names:
+                        return receiver.id
+                    if receiver.id in ("self", "cls") and len(self.class_stack) > 0:
+                        return self.class_stack[-1]
+                    return None
+
+                if isinstance(receiver, Attribute):
+                    parent_owner = self._resolve_receiver_owner_name(receiver.value)
+                    if parent_owner is None:
+                        return None
+                    class_fields = self.field_annotations.get(parent_owner)
+                    if class_fields is None:
+                        return None
+                    field_annotation = class_fields.get(receiver.attr)
+                    if isinstance(field_annotation, Name) and field_annotation.id in self.class_names:
+                        return field_annotation.id
+                    return None
+
+                return None
+
             def _resolve_method_q_name(self, node: Call):
                 assert isinstance(node.func, Attribute), "method resolution on non-attribute call unsupported"
                 method_name = node.func.attr
-                owner_name = None
-                if isinstance(node.func.value, Name):
-                    receiver_name = node.func.value.id
-                    if receiver_name in self.class_names:
-                        owner_name = receiver_name
-                    elif receiver_name in ("self", "cls") and len(self.class_stack) > 0:
-                        owner_name = self.class_stack[-1]
+                owner_name = self._resolve_receiver_owner_name(node.func.value)
                 if owner_name is None:
+                    if method_name in self.ambiguous_method_names:
+                        return None
                     matching_q_names = fun_q_names_by_method_name(method_name)
                     if len(matching_q_names) == 1:
                         return matching_q_names[0]
@@ -1148,11 +911,19 @@ class CinderDetyperBoxUnbox:
                     unbound_class_method = self._is_unbound_class_method_call(node)
                     q_fun_name = self._resolve_method_q_name(node)
                     if q_fun_name is None:
+                        if node.func.attr in self.ambiguous_method_names:
+                            return node
+                        arg_fallback = self.method_arg_fallback.get(node.func.attr)
                         ret_fallback = self.method_ret_fallback.get(node.func.attr)
-                        if ret_fallback is not None:
-                            return self._wrap_return(node, ret_fallback)
-                        return node
-                    info = self.call_info.get(q_fun_name)
+                        if arg_fallback is None and ret_fallback is None:
+                            return node
+                        info = {
+                            "typed_pos": arg_fallback["typed_pos"] if arg_fallback is not None else {},
+                            "typed_kw": arg_fallback["typed_kw"] if arg_fallback is not None else {},
+                            "ret_ann": ret_fallback,
+                        }
+                    else:
+                        info = self.call_info.get(q_fun_name)
 
                 if info is None:
                     return node
@@ -1193,12 +964,12 @@ class CinderDetyperBoxUnbox:
 
             if fn.args.vararg:
                 vararg_ann = fn.args.vararg.annotation
-                vararg_pass_name = pass_name_for_annotation(PASS_SCOPE_PARAM, vararg_ann)
+                vararg_pass_name = decide_param_strategy(vararg_ann).pass_name
                 if vararg_pass_name is not None and pass_state[vararg_pass_name]:
                     assert False, f"detyping vararg annotation unsupported: {fn.name}"
             if fn.args.kwarg:
                 kwarg_ann = fn.args.kwarg.annotation
-                kwarg_pass_name = pass_name_for_annotation(PASS_SCOPE_PARAM, kwarg_ann)
+                kwarg_pass_name = decide_param_strategy(kwarg_ann).pass_name
                 if kwarg_pass_name is not None and pass_state[kwarg_pass_name]:
                     assert False, f"detyping kwarg annotation unsupported: {fn.name}"
 
@@ -1236,25 +1007,11 @@ class CinderDetyperBoxUnbox:
                     annotation = child.annotation
                     assert annotation is not None, "top-level annassign without annotation unsupported"
                     policy = annotation_policy(annotation)
-                    pass_name = pass_name_for_annotation(PASS_SCOPE_BODY, annotation)
-                    if policy == "box":
+                    pass_name = decide_body_strategy(annotation).pass_name
+                    if policy in ("box", "construct", "cast"):
                         if pass_name is not None and guide[TOP_LEVEL][pass_name]:
-                            value = _detype_body_primitive(annotation, child.value, guide[TOP_LEVEL])
-                            assert value is not None, "top-level primitive body pass enabled but no rewrite"
-                            new_body.append(Assign(targets=[child.target], value=value, type_comment=None))
-                        else:
-                            new_body.append(child)
-                    elif policy == "construct":
-                        if pass_name is not None and guide[TOP_LEVEL][pass_name]:
-                            value = _detype_body_construct(annotation, child.value, guide[TOP_LEVEL])
-                            assert value is not None, "top-level construct body pass enabled but no rewrite"
-                            new_body.append(Assign(targets=[child.target], value=value, type_comment=None))
-                        else:
-                            new_body.append(child)
-                    elif policy == "cast":
-                        if pass_name is not None and guide[TOP_LEVEL][pass_name]:
-                            value = _detype_body_cast(annotation, child.value, guide[TOP_LEVEL])
-                            assert value is not None, "top-level cast body pass enabled but no rewrite"
+                            value = _detype_body(annotation, child.value, guide[TOP_LEVEL])
+                            assert value is not None, "top-level body pass enabled but no rewrite"
                             new_body.append(Assign(targets=[child.target], value=value, type_comment=None))
                         else:
                             new_body.append(child)
@@ -1263,48 +1020,6 @@ class CinderDetyperBoxUnbox:
                 else:
                     new_body.append(child)
             module_node.body = new_body
-
-        def annotations_equal(a: expr, b: expr):
-            return ast_dump(a, include_attributes=False) == ast_dump(b, include_attributes=False)
-
-        idempotent_name_wrappers = box_primitive_types.union(scalar_construct_types).union(frozenset(("box",)))
-
-        class RedundantWrapperCleaner(NodeTransformer):
-            @staticmethod
-            def is_unary_name_call(node: expr, name: str):
-                return (
-                    isinstance(node, Call)
-                    and isinstance(node.func, Name)
-                    and node.func.id == name
-                    and len(node.args) == 1
-                    and len(node.keywords) == 0
-                )
-
-            @staticmethod
-            def is_cast_call(node: expr):
-                return (
-                    isinstance(node, Call)
-                    and isinstance(node.func, Name)
-                    and node.func.id == "cast"
-                    and len(node.args) == 2
-                    and len(node.keywords) == 0
-                )
-
-            def visit_Call(self, node: Call):
-                self.generic_visit(node)
-
-                if self.is_cast_call(node):
-                    annotation = node.args[0]
-                    inner = node.args[1]
-                    if self.is_cast_call(inner) and annotations_equal(annotation, inner.args[0]):
-                        return inner
-
-                if isinstance(node.func, Name) and node.func.id in idempotent_name_wrappers:
-                    inner = node.args[0] if len(node.args) == 1 and len(node.keywords) == 0 else None
-                    if inner is not None and self.is_unary_name_call(inner, node.func.id):
-                        return inner
-
-                return node
 
         def detype_walker(node: AST, antr_name: str | None = None):
             for child_node in iter_child_nodes(node):
@@ -1329,7 +1044,15 @@ class CinderDetyperBoxUnbox:
 
         detype_walker(tree)
         method_ret_fallback = consistent_method_return_annotations(call_info)
-        tree = BoundaryCallRetyper(call_info, class_names, method_ret_fallback).visit(tree)
+        method_arg_fallback = consistent_method_param_annotations(call_info)
+        tree = BoundaryCallRetyper(
+            call_info,
+            class_names,
+            method_ret_fallback,
+            method_arg_fallback,
+            class_field_annotations,
+            self.ambiguous_method_names,
+        ).visit(tree)
         if any(guide[TOP_LEVEL][pass_name] for pass_name in PASS_NAMES_BY_SCOPE[PASS_SCOPE_BODY]):
             detype_top_level_body(tree)
         tree = RedundantWrapperCleaner().visit(tree)
@@ -1362,10 +1085,15 @@ class CinderDetyperBoxUnbox:
         assert len(perm) == self.fun_count(), f"function permutation length mismatch: {len(perm)} vs {self.fun_count()}"
         disabled_pass_state = CinderDetyperBoxUnbox._all_pass_state(False)
         enabled_pass_state = CinderDetyperBoxUnbox._pass_state_from_enabled_passes(enabled_pass_names)
-        guide = dict(
-            (q_fun_name, dict(enabled_pass_state if perm[i] else disabled_pass_state))
-            for i, q_fun_name in enumerate(self.fun_names)
-        )
+        plan_enabled = dict((q_fun_name, perm[i]) for i, q_fun_name in enumerate(self.fun_names))
+        guide = {}
+        for q_fun_name in self.fun_names:
+            antr_name, fun_name = q_fun_name
+            is_ambiguous_method = antr_name is not None and fun_name in self.ambiguous_method_names
+            if is_ambiguous_method:
+                guide[q_fun_name] = dict(disabled_pass_state)
+            else:
+                guide[q_fun_name] = dict(enabled_pass_state if plan_enabled[q_fun_name] else disabled_pass_state)
         # Keep top-level in the plan bitset, but force module body detyping off.
         if TOP_LEVEL in guide:
             guide[TOP_LEVEL] = dict(disabled_pass_state)

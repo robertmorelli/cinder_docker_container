@@ -7,6 +7,13 @@
     "expect": "typecheck_ok"
   },
   {
+    "name": "param_box_primitive_ambiguous_method_receiver",
+    "file": "cases/param_box_primitive_ambiguous_method_receiver.py",
+    "enabled_passes": ["param_box_primitive"],
+    "plan": ["Board.move"],
+    "expect": "typecheck_ok"
+  },
+  {
     "name": "param_construct_container",
     "file": "cases/param_construct_container.py",
     "enabled_passes": ["param_construct_container"],
