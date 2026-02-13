@@ -26,24 +26,29 @@ from typing import final
 import time
 
 @inline
+# detyper-status: types_removed
 def stronger(_s1, _s2):
     return box(cbool(cast(Strength, _s1).strength < cast(Strength, _s2).strength))
 
 @inline
+# detyper-status: types_removed
 def weaker(_s1, _s2):
     return box(cbool(cast(Strength, _s1).strength > cast(Strength, _s2).strength))
 
 @inline
+# detyper-status: types_removed
 def weakest_of(_s1, _s2):
     return cast(Strength, _s1) if cast(Strength, _s1).strength > cast(Strength, _s2).strength else cast(Strength, _s2)
 
 @final
 class Strength:
 
+    # detyper-status: types_kept
     def __init__(self, strength: int64, name: str) -> None:
         self.strength: int64 = strength
         self.name: str = name
 
+    # detyper-status: types_removed
     def next_weaker(self):
         return STRENGTHS[self.strength]
 REQUIRED = Strength(0, 'required')
@@ -57,14 +62,17 @@ STRENGTHS: CheckedList[Strength] = CheckedList[Strength]([WEAKEST, WEAK_DEFAULT,
 
 class Constraint(object):
 
+    # detyper-status: types_kept
     def __init__(self, strength: Strength) -> None:
         self.strength: Strength = strength
 
+    # detyper-status: types_kept
     def add_constraint(self) -> None:
         planner = cast(Planner, get_planner())
         self.add_to_graph()
         planner.incremental_add(cast(Constraint, self))
 
+    # detyper-status: types_removed
     def satisfy(self, _mark):
         mark: int64 = int64(_mark)
         planner = cast(Planner, get_planner())
@@ -84,6 +92,7 @@ class Constraint(object):
         out.mark = mark
         return overridden
 
+    # detyper-status: types_removed
     def destroy_constraint(self) -> None:
         planner = cast(Planner, get_planner())
         if self.is_satisfied():
@@ -91,39 +100,48 @@ class Constraint(object):
         else:
             self.remove_from_graph()
 
+    # detyper-status: types_removed
     def is_input(self):
         return box(cbool(False))
 
+    # detyper-status: types_removed
     def mark_inputs(self, _mark) -> None:
         mark: int64 = int64(_mark)
         pass
 
+    # detyper-status: types_removed
     def inputs_known(self, _mark):
         mark: int64 = int64(_mark)
         return box(cbool(True))
 
+    # detyper-status: types_removed
     def choose_method(self, _mark) -> None:
         mark: int64 = int64(_mark)
         pass
 
+    # detyper-status: types_removed
     def output(self):
         raise NotImplementedError()
 
+    # detyper-status: types_kept
     def execute(self) -> None:
         pass
 
 class UrnaryConstraint(Constraint):
 
+    # detyper-status: types_kept
     def __init__(self, v: Variable, strength: Strength) -> None:
         Constraint.__init__(self, strength)
         self.my_output: Variable = v
         self.satisfied: cbool = False
         self.add_constraint()
 
+    # detyper-status: types_removed
     def add_to_graph(self) -> None:
         self.my_output.add_constraint(self)
         self.satisfied = False
 
+    # detyper-status: types_removed
     def choose_method(self, _mark) -> None:
         mark: int64 = int64(_mark)
         if self.my_output.mark != mark and cbool(stronger(cast(Strength, self.strength), cast(Strength, self.my_output.walk_strength))):
@@ -131,21 +149,26 @@ class UrnaryConstraint(Constraint):
         else:
             self.satisfied = False
 
+    # detyper-status: types_removed
     def is_satisfied(self):
         return box(cbool(self.satisfied))
 
+    # detyper-status: types_removed
     def output(self):
         return self.my_output
 
+    # detyper-status: types_removed
     def recalculate(self) -> None:
         self.my_output.walk_strength = self.strength
         self.my_output.stay = not cbool(self.is_input())
         if self.my_output.stay:
             self.execute()
 
+    # detyper-status: types_removed
     def mark_unsatisfied(self) -> None:
         self.satisfied = False
 
+    # detyper-status: types_removed
     def remove_from_graph(self) -> None:
         if self.my_output is not None:
             self.my_output.remove_constraint(cast(Constraint, self))
@@ -158,6 +181,7 @@ class StayConstraint(UrnaryConstraint):
 @final
 class EditConstraint(UrnaryConstraint):
 
+    # detyper-status: types_removed
     def is_input(self):
         return box(cbool(True))
 
@@ -169,6 +193,7 @@ class Direction(IntEnum):
 
 class BinaryConstraint(Constraint):
 
+    # detyper-status: types_kept
     def __init__(self, v1: Variable, v2: Variable, strength: Strength) -> None:
         Constraint.__init__(self, strength)
         self.v1: Variable = v1
@@ -176,6 +201,7 @@ class BinaryConstraint(Constraint):
         self.direction: Direction = Direction.NONE
         self.add_constraint()
 
+    # detyper-status: types_removed
     def choose_method(self, _mark) -> None:
         mark: int64 = int64(_mark)
         if self.v1.mark == mark:
@@ -198,26 +224,32 @@ class BinaryConstraint(Constraint):
         else:
             self.direction = Direction.BACKWARD
 
+    # detyper-status: types_removed
     def add_to_graph(self) -> None:
         self.v1.add_constraint(self)
         self.v2.add_constraint(self)
         self.direction = Direction.NONE
 
+    # detyper-status: types_removed
     def is_satisfied(self):
         if self.direction != Direction.NONE:
             return box(cbool(True))
         return box(cbool(False))
 
+    # detyper-status: types_removed
     def mark_inputs(self, _mark) -> None:
         mark: int64 = int64(_mark)
         cast(Variable, self.input()).mark = mark
 
+    # detyper-status: types_removed
     def input(self):
         return self.v1 if self.direction == Direction.FORWARD else self.v2
 
+    # detyper-status: types_removed
     def output(self):
         return self.v2 if self.direction == Direction.FORWARD else self.v1
 
+    # detyper-status: types_removed
     def recalculate(self) -> None:
         ihn = cast(Variable, self.input())
         out = cast(Variable, self.output())
@@ -226,14 +258,17 @@ class BinaryConstraint(Constraint):
         if out.stay:
             self.execute()
 
+    # detyper-status: types_removed
     def mark_unsatisfied(self) -> None:
         self.direction = Direction.NONE
 
+    # detyper-status: types_removed
     def inputs_known(self, _mark):
         mark: int64 = int64(_mark)
         i = cast(Variable, self.input())
         return box(cbool(i.mark == mark or i.stay or cbool(i.determined_by is None)))
 
+    # detyper-status: types_removed
     def remove_from_graph(self):
         if self.v1 is not None:
             self.v1.remove_constraint(cast(Constraint, self))
@@ -244,17 +279,20 @@ class BinaryConstraint(Constraint):
 @final
 class ScaleConstraint(BinaryConstraint):
 
+    # detyper-status: types_kept
     def __init__(self, src: Variable, scale: Variable, offset: Variable, dest: Variable, strength: Strength) -> None:
         self.direction: Direction = Direction.NONE
         self.scale: Variable = scale
         self.offset: Variable = offset
         BinaryConstraint.__init__(self, src, dest, strength)
 
+    # detyper-status: types_removed
     def add_to_graph(self) -> None:
         BinaryConstraint.add_to_graph(self)
         self.scale.add_constraint(self)
         self.offset.add_constraint(self)
 
+    # detyper-status: types_removed
     def remove_from_graph(self):
         BinaryConstraint.remove_from_graph(self)
         if self.scale is not None:
@@ -262,18 +300,21 @@ class ScaleConstraint(BinaryConstraint):
         if self.offset is not None:
             self.offset.remove_constraint(cast(Constraint, self))
 
+    # detyper-status: types_removed
     def mark_inputs(self, _mark) -> None:
         mark: int64 = int64(_mark)
         BinaryConstraint.mark_inputs(self, box(mark))
         self.scale.mark = mark
         self.offset.mark = mark
 
+    # detyper-status: types_kept
     def execute(self) -> None:
         if self.direction == Direction.FORWARD:
             self.v2.value = self.v1.value * self.scale.value + self.offset.value
         else:
             self.v1.value = (self.v2.value - self.offset.value) / self.scale.value
 
+    # detyper-status: types_removed
     def recalculate(self) -> None:
         ihn = cast(Variable, self.input())
         out = cast(Variable, self.output())
@@ -285,12 +326,14 @@ class ScaleConstraint(BinaryConstraint):
 @final
 class EqualityConstraint(BinaryConstraint):
 
+    # detyper-status: types_kept
     def execute(self) -> None:
         cast(Variable, self.output()).value = cast(Variable, self.input()).value
 
 @final
 class Variable(object):
 
+    # detyper-status: types_kept
     def __init__(self, name: str, initial_value: int64=0) -> None:
         self.name: str = name
         self.value: int64 = initial_value
@@ -300,9 +343,11 @@ class Variable(object):
         self.walk_strength: Strength = WEAKEST
         self.stay: cbool = True
 
+    # detyper-status: types_kept
     def add_constraint(self, constraint: Constraint) -> None:
         self.constraints.append(constraint)
 
+    # detyper-status: types_removed
     def remove_constraint(self, _constraint) -> None:
         constraint: Constraint = cast(Constraint, _constraint)
         self.constraints.remove(constraint)
@@ -312,9 +357,11 @@ class Variable(object):
 @final
 class Planner(object):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.current_mark: int64 = 0
 
+    # detyper-status: types_removed
     def incremental_add(self, _constraint) -> None:
         constraint: Constraint = cast(Constraint, _constraint)
         mark = int64(self.new_mark())
@@ -322,6 +369,7 @@ class Planner(object):
         while overridden is not None:
             overridden = cast(Constraint | None, overridden.satisfy(box(int64(mark))))
 
+    # detyper-status: types_removed
     def incremental_remove(self, _constraint) -> None:
         constraint: Constraint = cast(Constraint, _constraint)
         out = cast(Variable, constraint.output())
@@ -337,11 +385,13 @@ class Planner(object):
                 strength = cast(Strength, strength.next_weaker())
             repeat = strength != WEAKEST
 
+    # detyper-status: types_removed
     def new_mark(self):
         x = self.current_mark + 1
         self.current_mark = x
         return box(int64(self.current_mark))
 
+    # detyper-status: types_removed
     def make_plan(self, _sources):
         sources: CheckedList[UrnaryConstraint] = CheckedList[UrnaryConstraint](_sources)
         mark = int64(self.new_mark())
@@ -355,6 +405,7 @@ class Planner(object):
                 self.add_constraints_consuming_to(cast(Variable, c.output()), CheckedList[Constraint](CheckedList[Constraint](todo)))
         return plan
 
+    # detyper-status: types_removed
     def extract_plan_from_constraints(self, _constraints):
         constraints: CheckedList[UrnaryConstraint] = CheckedList[UrnaryConstraint](_constraints)
         sources = CheckedList[UrnaryConstraint]([])
@@ -363,6 +414,7 @@ class Planner(object):
                 CheckedList[UrnaryConstraint](sources).append(c)
         return cast(Plan, self.make_plan(CheckedList[UrnaryConstraint](CheckedList[UrnaryConstraint](sources))))
 
+    # detyper-status: types_removed
     def add_propagate(self, _c, _mark):
         mark: int64 = int64(_mark)
         c: Constraint = cast(Constraint, _c)
@@ -377,6 +429,7 @@ class Planner(object):
             self.add_constraints_consuming_to(cast(Variable, d.output()), CheckedList[Constraint](CheckedList[Constraint](todo)))
         return box(cbool(True))
 
+    # detyper-status: types_removed
     def remove_propagate_from(self, _out):
         out: Variable = cast(Variable, _out)
         out.determined_by = None
@@ -398,6 +451,7 @@ class Planner(object):
                     CheckedList[Variable](todo).append(cast(Variable, c.output()))
         return CheckedList[Constraint](unsatisfied)
 
+    # detyper-status: types_removed
     def add_constraints_consuming_to(self, _v, _coll) -> None:
         coll: CheckedList[Constraint] = CheckedList[Constraint](_coll)
         v: Variable = cast(Variable, _v)
@@ -410,31 +464,39 @@ class Planner(object):
 @final
 class Plan(object):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.v: CheckedList[Constraint] = []
 
+    # detyper-status: types_kept
     def add_constraint(self, c: Constraint) -> None:
         self.v.append(c)
 
+    # detyper-status: types_removed
     def __len__(self):
         return len(self.v)
 
+    # detyper-status: types_removed
     def __getitem__(self, index):
         return self.v[index]
 
+    # detyper-status: types_kept
     def execute(self) -> None:
         for c in self.v:
             c.execute()
 
+# detyper-status: types_removed
 def recreate_planner():
     global planner
     planner = Planner()
     return planner
 
+# detyper-status: types_removed
 def get_planner():
     global planner
     return planner
 
+# detyper-status: types_removed
 def chain_test(_n) -> None:
     n: int64 = int64(_n)
     '\n    This is the standard DeltaBlue benchmark. A long chain of equality\n    constraints is constructed with a stay constraint on one end. An\n    edit constraint is then added to the opposite end and the time is\n    measured for adding and removing this constraint, and extracting\n    and executing a constraint satisfaction plan. There are two cases.\n    In case 1, the added constraint is stronger than the stay\n    constraint and values must propagate down the entire length of the\n    chain. In case 2, the added constraint is weaker than the stay\n    constraint so it cannot be accomodated. The cost in this case is,\n    of course, very low. Typical situations lie somewhere between these\n    two extremes.\n    '
@@ -470,6 +532,7 @@ def chain_test(_n) -> None:
             print('Chain test failed.')
         i = box(int64(int64(i) + 1))
 
+# detyper-status: types_removed
 def projection_test(_n) -> None:
     n: int64 = int64(_n)
     '\n    This test constructs a two sets of variables related to each\n    other by a simple linear transformation (scale and offset). The\n    time is measured to change a variable on either side of the\n    mapping and to change the scale and offset factors.\n    '
@@ -508,6 +571,7 @@ def projection_test(_n) -> None:
             print('Projection 4 failed')
         i = box(int64(int64(i) + 1))
 
+# detyper-status: types_removed
 def change(_v, _new_value) -> None:
     new_value: int64 = int64(_new_value)
     v: Variable = cast(Variable, _v)
@@ -524,6 +588,7 @@ def change(_v, _new_value) -> None:
     edit.destroy_constraint()
 planner = None
 
+# detyper-status: types_removed
 def delta_blue(_i) -> None:
     i: int = cast(int, _i)
     n = int64(i)

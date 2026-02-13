@@ -11,6 +11,7 @@ import sys
 import time
 DEFAULT_ARG = 9
 
+# detyper-status: types_removed
 def fannkuch(_nb):
     nb: int = cast(int, _nb)
     n = box(int64(nb))

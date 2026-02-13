@@ -28,6 +28,7 @@ BUFSIZE_RANGE = range(BUFSIZE)
 
 class Packet(object):
 
+    # detyper-status: types_kept
     def __init__(self, l: Optional[Packet], i: int64, k: int64) -> None:
         self.link: Optional[Packet] = l
         self.ident: int64 = i
@@ -35,6 +36,7 @@ class Packet(object):
         self.datum: int = 0
         self.data: List[int] = [0] * BUFSIZE
 
+    # detyper-status: types_removed
     def append_to(self, _lst):
         lst: Optional[Packet] = cast(Optional[Packet], _lst)
         self.link = None
@@ -54,26 +56,31 @@ class TaskRec:
 
 class DeviceTaskRec(TaskRec):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.pending: Optional[Packet] = None
 
 class IdleTaskRec(TaskRec):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.control: int64 = 1
         self.count: int64 = 10000
 
 class HandlerTaskRec(TaskRec):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.work_in: Optional[Packet] = None
         self.device_in: Optional[Packet] = None
 
+    # detyper-status: types_removed
     def workInAdd(self, _p):
         p: Packet = cast(Packet, _p)
         self.work_in = cast(Packet, p.append_to(cast(Optional[Packet], self.work_in)))
         return self.work_in
 
+    # detyper-status: types_removed
     def deviceInAdd(self, _p):
         p: Packet = cast(Packet, _p)
         self.device_in = cast(Packet, p.append_to(cast(Optional[Packet], self.device_in)))
@@ -81,35 +88,41 @@ class HandlerTaskRec(TaskRec):
 
 class WorkerTaskRec(TaskRec):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.destination: int64 = int64(I_HANDLERA)
         self.count: int64 = 0
 
 class TaskState(object):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.packet_pending: cbool = True
         self.task_waiting: cbool = False
         self.task_holding: cbool = False
 
+    # detyper-status: types_removed
     def packetPending(self):
         self.packet_pending = True
         self.task_waiting = False
         self.task_holding = False
         return self
 
+    # detyper-status: types_removed
     def waiting(self):
         self.packet_pending = False
         self.task_waiting = True
         self.task_holding = False
         return self
 
+    # detyper-status: types_removed
     def running(self):
         self.packet_pending = False
         self.task_waiting = False
         self.task_holding = False
         return self
 
+    # detyper-status: types_removed
     def waitingWithPacket(self):
         self.packet_pending = True
         self.task_waiting = True
@@ -117,27 +130,33 @@ class TaskState(object):
         return self
 
     @inline
+    # detyper-status: types_removed
     def isPacketPending(self):
         return box(cbool(self.packet_pending))
 
     @inline
+    # detyper-status: types_removed
     def isTaskWaiting(self):
         return box(cbool(self.task_waiting))
 
     @inline
+    # detyper-status: types_removed
     def isTaskHolding(self):
         return box(cbool(self.task_holding))
 
     @inline
+    # detyper-status: types_removed
     def isTaskHoldingOrWaiting(self):
         return box(cbool(self.task_holding or (not self.packet_pending and self.task_waiting)))
 
     @inline
+    # detyper-status: types_removed
     def isWaitingWithPacket(self):
         return box(cbool(self.packet_pending and self.task_waiting and (not self.task_holding)))
 tracing = False
 layout = 0
 
+# detyper-status: types_removed
 def trace(a):
     global layout
     layout -= 1
@@ -149,6 +168,7 @@ TASKTABSIZE = 10
 
 class TaskWorkArea(object):
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.taskTab: List[Task] = [None] * TASKTABSIZE
         self.taskList: Optional[Task] = None
@@ -158,6 +178,7 @@ taskWorkArea: TaskWorkArea = TaskWorkArea()
 
 class Task(TaskState):
 
+    # detyper-status: types_kept
     def __init__(self, i: int64, p: int64, w: Optional[Packet], initialState: TaskState, r: TaskRec) -> None:
         wa: TaskWorkArea = taskWorkArea
         self.link: Optional[Task] = wa.taskList
@@ -171,11 +192,13 @@ class Task(TaskState):
         wa.taskList = self
         wa.taskTab[i] = self
 
+    # detyper-status: types_removed
     def fn(self, _pkt, _r):
         pkt: Optional[Packet] = cast(Optional[Packet], _pkt)
         r: TaskRec = cast(TaskRec, _r)
         raise NotImplementedError
 
+    # detyper-status: types_removed
     def addPacket(self, _p, _old):
         p: Packet = cast(Packet, _p)
         old: Task = cast(Task, _old)
@@ -188,6 +211,7 @@ class Task(TaskState):
             cast(Packet, p.append_to(cast(Optional[Packet], self.input)))
         return old
 
+    # detyper-status: types_removed
     def runTask(self):
         if cbool(TaskState.isWaitingWithPacket(self)):
             msg: Optional[Packet] = self.input
@@ -201,15 +225,18 @@ class Task(TaskState):
             msg = None
         return self.fn(cast(Optional[Packet], msg), cast(TaskRec, self.handle))
 
+    # detyper-status: types_removed
     def waitTask(self):
         self.task_waiting = True
         return self
 
+    # detyper-status: types_removed
     def hold(self):
         taskWorkArea.holdCount += 1
         self.task_holding = True
         return self.link
 
+    # detyper-status: types_removed
     def release(self, _i):
         i: int64 = int64(_i)
         t = cast(Task, Task.findtcb(self, box(i)))
@@ -219,6 +246,7 @@ class Task(TaskState):
         else:
             return self
 
+    # detyper-status: types_removed
     def qpkt(self, _pkt):
         pkt: Packet = cast(Packet, _pkt)
         t = cast(Task, Task.findtcb(self, box(int64(pkt.ident))))
@@ -227,6 +255,7 @@ class Task(TaskState):
         pkt.ident = self.ident
         return cast(Task, cast(Task, t).addPacket(cast(Packet, pkt), cast(Task, self)))
 
+    # detyper-status: types_removed
     def findtcb(self, _id):
         id: int64 = int64(_id)
         t = taskWorkArea.taskTab[id]
@@ -234,9 +263,11 @@ class Task(TaskState):
 
 class DeviceTask(Task):
 
+    # detyper-status: types_kept
     def __init__(self, i: int64, p: int64, w: Optional[Packet], s: TaskState, r: DeviceTaskRec) -> None:
         Task.__init__(self, i, p, w, s, r)
 
+    # detyper-status: types_removed
     def fn(self, _pkt, _r):
         pkt: Optional[Packet] = cast(Optional[Packet], _pkt)
         r: TaskRec = cast(TaskRec, _r)
@@ -256,9 +287,11 @@ class DeviceTask(Task):
 
 class HandlerTask(Task):
 
+    # detyper-status: types_kept
     def __init__(self, i: int64, p: int64, w: Packet, s: TaskState, r: HandlerTaskRec) -> None:
         Task.__init__(self, i, p, w, s, r)
 
+    # detyper-status: types_removed
     def fn(self, _pkt, _r):
         pkt: Optional[Packet] = cast(Optional[Packet], _pkt)
         r: TaskRec = cast(TaskRec, _r)
@@ -285,9 +318,11 @@ class HandlerTask(Task):
 
 class IdleTask(Task):
 
+    # detyper-status: types_kept
     def __init__(self, i: int64, p: int64, w: int, s: TaskState, r: IdleTaskRec) -> None:
         Task.__init__(self, i, 0, None, s, r)
 
+    # detyper-status: types_removed
     def fn(self, _pkt, _r):
         pkt: Optional[Packet] = cast(Optional[Packet], _pkt)
         r: TaskRec = cast(TaskRec, _r)
@@ -305,9 +340,11 @@ A: Final[int] = 65
 
 class WorkTask(Task):
 
+    # detyper-status: types_kept
     def __init__(self, i: int64, p: int64, w: Packet, s: TaskState, r: WorkerTaskRec) -> None:
         Task.__init__(self, i, p, w, s, r)
 
+    # detyper-status: types_removed
     def fn(self, _pkt, _r):
         pkt: Optional[Packet] = cast(Optional[Packet], _pkt)
         r: TaskRec = cast(TaskRec, _r)
@@ -331,6 +368,7 @@ class WorkTask(Task):
             i = i + 1
         return cast(Task, self.qpkt(cast(Packet, pkt)))
 
+# detyper-status: types_removed
 def schedule() -> None:
     t: Optional[Task] = taskWorkArea.taskList
     while t is not None:
@@ -345,6 +383,7 @@ def schedule() -> None:
 
 class Richards(object):
 
+    # detyper-status: types_removed
     def run(self, _iterations):
         iterations: int = cast(int, _iterations)
         for i in range(iterations):

@@ -11,6 +11,7 @@ import sys
 import time
 DEFAULT_ARG = 9
 
+# detyper-status: types_kept
 def fannkuch(nb: int) -> int:
     n: int64 = int64(nb)
     count: Array[int64] = Array[int64](nb)

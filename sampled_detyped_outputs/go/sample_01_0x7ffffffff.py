@@ -9,6 +9,7 @@ MAXMOVES: int = 9 * 9 * 3
 TIMESTAMP: int = 0
 MOVES: int = 0
 
+# detyper-status: types_removed
 def to_pos(_x, _y):
     x: int64 = int64(_x)
     y: int64 = int64(_y)
@@ -17,6 +18,7 @@ def to_pos(_x, _y):
 @final
 class Square:
 
+    # detyper-status: types_kept
     def __init__(self: Square, board: Board, pos: int) -> None:
         self.board: Board = board
         self.pos: int64 = int64(pos)
@@ -32,6 +34,7 @@ class Square:
         self.neighbours: CheckedList[Square] = CheckedList[Square]([])
         self.temp_ledges: int64 = 0
 
+    # detyper-status: types_removed
     def set_neighbours(self: Square) -> None:
         x = box(int64(self.pos % 9))
         y = box(int64(self.pos // 9))
@@ -43,6 +46,7 @@ class Square:
                 bbb = cast(Square, self.board.squares[int64(to_pos(box(int64(newx)), box(int64(newy))))])
                 self.neighbours.append(cast(Square, bbb))
 
+    # detyper-status: types_kept
     def move(self: Square, color: int64) -> None:
         global TIMESTAMP, MOVES
         TIMESTAMP += 1
@@ -69,6 +73,7 @@ class Square:
                         neighbour.remove(neighbour_ref, True)
         self.board.zobrist.add()
 
+    # detyper-status: types_kept
     def remove(self: Square, reference: Square, update: bool) -> None:
         self.board.zobrist.update(cast(Square, self), box(int64(0)))
         self.removestamp = TIMESTAMP
@@ -83,6 +88,7 @@ class Square:
                 elif update:
                     neighbour_ref.ledges += 1
 
+    # detyper-status: types_removed
     def find(self: Square, _update):
         update: bool = cast(bool, _update)
         reference = cast(Square, self.reference)
@@ -95,6 +101,7 @@ class Square:
 @final
 class EmptySet:
 
+    # detyper-status: types_kept
     def __init__(self, board: Board) -> None:
         self.board: Board = board
         S2 = 9 * 9
@@ -105,6 +112,7 @@ class EmptySet:
             self.empties[ii] = ii
             self.empty_pos[ii] = ii
 
+    # detyper-status: types_removed
     def random_choice(self):
         choices = box(int64(len(self.empties)))
         while int64(choices):
@@ -117,13 +125,16 @@ class EmptySet:
             self.set(box(int64(choices)), box(int64(pos)))
         return box(int64(-1))
 
+    # detyper-status: types_kept
     def add(self, pos: int64) -> None:
         self.empty_pos[pos] = int64(len(self.empties))
         self.empties[pos] = pos
 
+    # detyper-status: types_kept
     def remove(self, pos: int64, update: bool) -> None:
         self.set(box(int64(self.empty_pos[pos])), box(int64(self.empties[len(self.empties) - 1])))
 
+    # detyper-status: types_removed
     def set(self, _i, _pos) -> None:
         i: int64 = int64(_i)
         pos: int64 = int64(_pos)
@@ -133,6 +144,7 @@ class EmptySet:
 @final
 class ZobristHash:
 
+    # detyper-status: types_kept
     def __init__(self, board: Board) -> None:
         self.hash_set: Set[int] = set()
         self.hash: int = 0
@@ -141,21 +153,25 @@ class ZobristHash:
         self.hash_set.clear()
         self.hash_set.add(self.hash)
 
+    # detyper-status: types_removed
     def update(self, _square, _color) -> None:
         color: int64 = int64(_color)
         square: Square = cast(Square, _square)
         self.hash ^= square.zobrist_strings[square.color]
         self.hash ^= square.zobrist_strings[color]
 
+    # detyper-status: types_kept
     def add(self) -> None:
         self.hash_set.add(self.hash)
 
+    # detyper-status: types_removed
     def dupe(self):
         return self.hash in self.hash_set
 
 @final
 class Board:
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.squares: CheckedList[Square] = CheckedList[Square]([])
         self.emptyset: EmptySet = EmptySet(self)
@@ -173,6 +189,7 @@ class Board:
             square.color = 0
             square.used = False
 
+    # detyper-status: types_removed
     def reset(self) -> None:
         for square in self.squares:
             square.color = 0
@@ -186,6 +203,7 @@ class Board:
         self.white_dead = 0
         self.black_dead = 0
 
+    # detyper-status: types_kept
     def move(self, pos: int64) -> None:
         square = self.squares[pos]
         if pos != -1:
@@ -200,9 +218,11 @@ class Board:
         self.lastmove = pos
         self.history.append(box(pos))
 
+    # detyper-status: types_removed
     def random_move(self):
         return box(int64(self.emptyset.random_choice()))
 
+    # detyper-status: types_removed
     def useful_fast(self, _square):
         square: Square = cast(Square, _square)
         if not square.used:
@@ -211,6 +231,7 @@ class Board:
                     return True
         return False
 
+    # detyper-status: types_removed
     def useful(self, _pos):
         pos: int64 = int64(_pos)
         global TIMESTAMP
@@ -247,14 +268,17 @@ class Board:
         strong_opps = opps - weak_opps
         return not dupe and (empties or weak_opps or (strong_neighs and (strong_opps or weak_neighs)))
 
+    # detyper-status: types_removed
     def useful_moves(self):
         return CheckedList[int]([pos for pos in self.emptyset.empties if cast(int, self.useful(box(int64(pos))))])
 
+    # detyper-status: types_removed
     def replay(self, _history) -> None:
         history: Array[int64] = cast(Array[int64], _history)
         for pos in history:
             self.move(pos)
 
+    # detyper-status: types_kept
     def score(self, color: int64) -> float:
         if color == 1:
             count = 7.5 + self.black_dead
@@ -273,6 +297,7 @@ class Board:
                     count += 1
         return count
 
+    # detyper-status: types_removed
     def check(self) -> None:
         for square in self.squares:
             if square.color == 0:
@@ -306,6 +331,7 @@ class Board:
 @final
 class UCTNode:
 
+    # detyper-status: types_kept
     def __init__(self) -> None:
         self.bestchild: None | UCTNode = None
         self.pos: int64 = -1
@@ -315,6 +341,7 @@ class UCTNode:
         self.parent: None | UCTNode = None
         self.unexplored: CheckedList[int] = CheckedList[int]([])
 
+    # detyper-status: types_removed
     def play(self, _board) -> None:
         board: Board = cast(Board, _board)
         ' uct tree search '
@@ -340,6 +367,7 @@ class UCTNode:
         self.random_playout(cast(Board, board))
         self.update_path(cast(Board, board), cast(int, color), CheckedList[UCTNode](CheckedList[UCTNode](path)))
 
+    # detyper-status: types_removed
     def select(self, _board):
         board: Board = cast(Board, _board)
         ' select move; unexplored children first, then according to uct value '
@@ -354,6 +382,7 @@ class UCTNode:
         else:
             return box(int64(-1))
 
+    # detyper-status: types_removed
     def random_playout(self, _board) -> None:
         board: Board = cast(Board, _board)
         ' random play until both players pass '
@@ -362,6 +391,7 @@ class UCTNode:
                 break
             board.move(int64(board.random_move()))
 
+    # detyper-status: types_removed
     def update_path(self, _board, _color, _path) -> None:
         path: CheckedList[UCTNode] = CheckedList[UCTNode](_path)
         board: Board = cast(Board, _board)
@@ -383,6 +413,7 @@ class UCTNode:
                 if node.parent is not None:
                     node.parent.bestchild = bc
 
+    # detyper-status: types_kept
     def score(self) -> float:
         winrate = box(self.wins) / float(box(self.wins) + box(self.losses))
         parentvisits: int = 0
@@ -395,6 +426,7 @@ class UCTNode:
         nodevisits: int = box(self.wins + self.losses)
         return winrate + math.sqrt(math.log(parentvisits) / (5 * nodevisits))
 
+    # detyper-status: types_removed
     def best_child(self):
         maxscore = -1
         maxchild = None
@@ -404,6 +436,7 @@ class UCTNode:
                 maxscore = child.score()
         return maxchild
 
+    # detyper-status: types_removed
     def best_visited(self):
         maxvisits = box(int64(-1))
         maxchild = None
@@ -413,6 +446,7 @@ class UCTNode:
                 maxchild = child
         return maxchild
 
+# detyper-status: types_removed
 def computer_move(_board):
     board: Board = cast(Board, _board)
     global MOVES

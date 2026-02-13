@@ -1,10 +1,10 @@
 from __static__ import Array, int64, cast
 
-
+# detyper-status: types_removed
 def make_items(xs: Array[int64]):
     return xs
 
-
+# detyper-status: types_kept
 def use(v: Array[int64]) -> int64:
     out: Array[int64] = cast(Array[int64], make_items(v))
     return out[int64(0)]

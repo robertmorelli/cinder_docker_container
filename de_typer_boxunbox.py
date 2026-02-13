@@ -3,6 +3,7 @@ from ast import (
     dump as ast_dump,
     unparse,
     FunctionDef,
+    AsyncFunctionDef,
     ClassDef,
     AnnAssign,
     Assign,
@@ -12,6 +13,7 @@ from ast import (
     AST,
     fix_missing_locations,
     NodeTransformer,
+    NodeVisitor,
     Import,
     ImportFrom,
     Constant,
@@ -430,6 +432,53 @@ class CinderDetyperBoxUnbox:
                     level=0,
                 ),
             )
+
+        def function_should_remove_types(fun_name: str, class_name: str | None):
+            if class_name is not None and class_name not in self.class_antrs:
+                return False
+            try:
+                pass_state = get_fun_pass_state(fun_name, antr_name=class_name)
+            except AssertionError:
+                return False
+            return any(pass_state[pass_name] for pass_name in PASS_NAMES)
+
+        def add_function_status_comments(src: str):
+            parsed_module = parse(src, type_comments=True)
+            rows: list[tuple[int, int, str]] = []
+
+            class StatusCollector(NodeVisitor):
+                def __init__(self):
+                    self.class_stack: list[str] = []
+
+                def _record_function(self, node: FunctionDef | AsyncFunctionDef):
+                    class_name = self.class_stack[-1] if len(self.class_stack) > 0 else None
+                    remove_types = function_should_remove_types(node.name, class_name)
+                    status = "types_removed" if remove_types else "types_kept"
+                    rows.append((node.lineno, node.col_offset, status))
+                    self.generic_visit(node)
+
+                def visit_ClassDef(self, node: ClassDef):
+                    self.class_stack.append(node.name)
+                    self.generic_visit(node)
+                    self.class_stack.pop()
+
+                def visit_FunctionDef(self, node: FunctionDef):
+                    self._record_function(node)
+
+                def visit_AsyncFunctionDef(self, node: AsyncFunctionDef):
+                    self._record_function(node)
+
+            StatusCollector().visit(parsed_module)
+            if len(rows) == 0:
+                return src
+
+            src_lines = src.splitlines()
+            for lineno, col_offset, status in sorted(rows, key=lambda item: item[0], reverse=True):
+                indentation = " " * col_offset
+                src_lines.insert(lineno - 1, f"{indentation}# detyper-status: {status}")
+            if src.endswith("\n"):
+                return "\n".join(src_lines) + "\n"
+            return "\n".join(src_lines)
 
         pass_ctx = PassContext(
             annotation_policy=annotation_policy,
@@ -1216,7 +1265,8 @@ class CinderDetyperBoxUnbox:
         tree = RedundantWrapperCleaner().visit(tree)
         ensure_static_imports(tree, needed_imports)
         fix_missing_locations(tree)
-        return split_lines(unparse(tree))
+        rendered = split_lines(unparse(tree))
+        return add_function_status_comments(rendered)
 
     @cache
     @staticmethod

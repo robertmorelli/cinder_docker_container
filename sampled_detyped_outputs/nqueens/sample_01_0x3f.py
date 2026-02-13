@@ -8,12 +8,14 @@ from __static__ import int64, box, Array, cbool, clen, cast
 from typing import List, Generator, Iterator
 import time
 
+# detyper-status: types_removed
 def static_abs(_v):
     v: int64 = int64(_v)
     if v < 0:
         return box(int64(-v))
     return box(int64(v))
 
+# detyper-status: types_removed
 def create_array(_start, _end, _step):
     start: int64 = int64(_start)
     end: int64 = int64(_end)
@@ -31,6 +33,7 @@ def create_array(_start, _end, _step):
         i = box(int64(int64(i) + 1))
     return cast(Array[int64], a)
 
+# detyper-status: types_removed
 def permutations(_pool, _r=-1) -> Iterator[Array[int64]]:
     r: int64 = int64(_r)
     pool: Array[int64] = cast(Array[int64], _pool)
@@ -71,6 +74,7 @@ def permutations(_pool, _r=-1) -> Iterator[Array[int64]]:
         if i == -1:
             return
 
+# detyper-status: types_removed
 def solve(_queen_count) -> Iterator[Array[int64]]:
     queen_count: int = cast(int, _queen_count)
     'N-Queens solver.\n\n    Args:\n        queen_count: the number of queens to solve for. This is also the\n            board size.\n\n    Yields:\n        Solutions to the problem. Each yielded value is looks like\n        (3, 8, 2, 1, 4, ..., 6) where each number is the column position for the\n        queen, and the index into the tuple indicates the row.\n    '
@@ -80,6 +84,7 @@ def solve(_queen_count) -> Iterator[Array[int64]]:
         if queen_count == len(set((vec[i] + i for i in cols))) == len(set((vec[i] - i for i in cols))):
             yield vec
 
+# detyper-status: types_removed
 def bench_n_queens(_queen_count):
     queen_count: int = cast(int, _queen_count)
     '\n    Return all the possible valid configurations of the queens\n    in a board of size queen_count.\n    See solve method to understand it better\n    '

@@ -31,18 +31,22 @@ import math
 
 class GVector(object):
 
+    # detyper-status: types_kept
     def __init__(self, x: float, y: float, z: float) -> None:
         self.x: float = x
         self.y: float = y
         self.z: float = z
 
+    # detyper-status: types_removed
     def Mag(self):
         return math.sqrt(self.x ** 2 + self.y ** 2 + self.z ** 2)
 
+    # detyper-status: types_removed
     def dist(self, _other):
         other: GVector = cast(GVector, _other)
         return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2 + (self.z - other.z) ** 2)
 
+    # detyper-status: types_removed
     def __add__(self, _other):
         other: GVector = cast(GVector, _other)
         if not isinstance(other, GVector):
@@ -50,16 +54,19 @@ class GVector(object):
         v = GVector(self.x + other.x, self.y + other.y, self.z + other.z)
         return v
 
+    # detyper-status: types_removed
     def __sub__(self, _other):
         other: GVector = cast(GVector, _other)
         return self + other * -1
 
+    # detyper-status: types_removed
     def __mul__(self, _other):
         other: float = float(_other)
         v = GVector(self.x * other, self.y * other, self.z * other)
         return v
     __rmul__ = __mul__
 
+    # detyper-status: types_removed
     def linear_combination(self, _other, _l1, _l2):
         other: GVector = cast(GVector, _other)
         l1: float = float(_l1)
@@ -69,6 +76,7 @@ class GVector(object):
 
 class Spline(object):
 
+    # detyper-status: types_kept
     def __init__(self, points: CheckedList[GVector], degree: int, knots: CheckedList[int]) -> None:
         if knots == None:
             knots = [0] * degree + range(1, len(points) - degree)
@@ -88,9 +96,11 @@ class Spline(object):
         self.points = points
         self.degree = degree
 
+    # detyper-status: types_removed
     def GetDomain(self):
         return (self.knots[self.degree - 1], self.knots[len(self.knots) - self.degree])
 
+    # detyper-status: types_removed
     def __call__(self, _u):
         u: float = float(_u)
         dom = self.GetDomain()
@@ -122,6 +132,7 @@ class Spline(object):
 
 class Chaosgame(object):
 
+    # detyper-status: types_kept
     def __init__(self, splines: List[Spline], thickness: float, w: int, h: int, n: int) -> None:
         self.splines: CheckedList[Spline] = CheckedList[Spline](splines)
         self.thickness = thickness
@@ -159,6 +170,7 @@ class Chaosgame(object):
                     y -= 1
                 im[x][h - y - 1] = 0
 
+    # detyper-status: types_removed
     def transform_point(self, _point):
         point: GVector = cast(GVector, _point)
         x = (point.x - self.minx) / self.width
